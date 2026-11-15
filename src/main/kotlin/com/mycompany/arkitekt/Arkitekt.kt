@@ -13,7 +13,7 @@ import com.apollographql.apollo.api.http.HttpRequest
 import com.apollographql.apollo.api.http.HttpResponse
 import com.apollographql.apollo.network.http.HttpInterceptor
 import com.apollographql.apollo.network.http.HttpInterceptorChain
-import com.mycompany.lok.graphql.MeQuery
+import live.arkitekt.*
 import com.mycompany.mikro.graphql.CreateAnnotationCollectionMutation
 import com.mycompany.mikro.graphql.GetAnnotationCollectionQuery
 import com.mycompany.mikro.graphql.CreateAnnotationMutation
@@ -101,85 +101,6 @@ import kotlinx.coroutines.flow.map
 import java.util.logging.Logger
 import com.apollographql.apollo.api.Operation
 import net.imglib2.type.numeric.real.DoubleType
-
-class ErrorLoggingInterceptor : ApolloInterceptor {
-
-    private val logger = Logger.getLogger("ApolloGraphQLErrorLogger")
-
-    override fun <D : Operation.Data> intercept(
-        request: ApolloRequest<D>,
-        chain: ApolloInterceptorChain
-    ): Flow<ApolloResponse<D>> {
-        return chain.proceed(request).map { response ->
-            val operationName = request.operation.name()
-            val errors = response.errors
-            if (!errors.isNullOrEmpty()) {
-                logger.warning("GraphQL errors in operation $operationName:")
-                errors.forEach { error ->
-                    logger.warning(" - ${error.message}")
-                }
-            }
-            response
-        }
-    }
-}
-
-
-class LogInterceptor(val service_name: String) : HttpInterceptor {
-    override suspend fun intercept(
-        request: HttpRequest,
-        chain: HttpInterceptorChain
-    ): HttpResponse {
-        try {
-            var result =  chain.proceed(request)
-            return result
-
-        } catch (e: Exception) {
-            println("$service_name: Error during request execution: ${e.message}")
-            println("$service_name:Request URL: ${request.url}")
-            println("$service_name: Request method: ${request.method}")
-            throw e
-        }
-
-    }
-}
-
-
-
-
-
-class Unlok(alias: Alias, tokens: TokenManager) {
-    private val apolloClient: ApolloClient =
-            ApolloClient.Builder()
-                    .serverUrl(alias.to_http_path("graphql"))
-                    .addHttpInterceptor(AuthorizationInterceptor { tokens.accessToken() })
-                .addHttpInterceptor(LogInterceptor("unlok"))
-                .addInterceptor(AuthRetryInterceptor(tokens))
-                    .build()
-
-    fun getClient(): ApolloClient {
-        return apolloClient
-    }
-
-    suspend fun getUser(): MeQuery.Data {
-
-
-
-        val client = getClient()
-        // Use the client to execute the query
-        val response = client.query(MeQuery()).execute()
-
-        println("Response: ${response.data}")
-        response.data.let { data ->
-            if (data == null) {
-                throw Exception("Failed to retrieve user data")
-            }
-            return data
-        }
-        throw Exception("Failed to retrieve user data")
-    }
-
-}
 
 class DatalayerStore(store: S3Store, storeId: String) {
     val store = store
@@ -303,26 +224,15 @@ class Mikro(alias: Alias, tokens: TokenManager) {
     }
 }
 
-class Rekuest(alias: Alias, tokens: TokenManager) {
-    private val apolloClient: ApolloClient =
-            ApolloClient.Builder()
-                    .serverUrl(alias.to_http_path("graphql"))
-                    .addHttpInterceptor(AuthorizationInterceptor { tokens.accessToken() })
-                .addHttpInterceptor(LogInterceptor("rekuest"))
-                .addInterceptor(AuthRetryInterceptor(tokens))
-                .addInterceptor(ErrorLoggingInterceptor())
-                .build()
+/** Mikro, as an app declares it: `App(…).service(mikroService)`, then `context[mikroService]`. */
+val mikroService = Service("mikro", "live.arkitekt.mikro") { Mikro(it.alias, it.tokens) }
 
-    fun getClient(): ApolloClient {
-        return apolloClient
-    }
-    
-
-}
+/** The datalayer (S3), whose credentials mikro issues: declared after [mikroService]. */
+val datalayerService = Service("datalayer", "live.arkitekt.s3") { Datalayer(it.alias, it[mikroService]) }
 
 /**
- * What a logged-in app works with: the deployment's clients, and the ImageJ it runs in. A
- * [Runtime] builds it at login and every action's handler is handed it.
+ * What this plugin's handlers work with: the deployment's clients (from the login's
+ * [Context]) and the ImageJ they run in.
  */
 class Services(
         public val mikro: Mikro,

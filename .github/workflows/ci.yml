@@ -27,6 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The Arkitekt runtime is built from source as a composite build (settings.gradle.kts):
+      # it is looked for beside this repository, or here.
+      - uses: actions/checkout@v7
+        with:
+          repository: arkitektio/arkitekt-kotlin
+          ref: v0.1.0
+          path: arkitekt-kotlin
+
       # Full JDK 17: Gradle 8.10 cannot run on a newer JDK, and the build needs AWT present
       # (the tests boot an ImageJ context). The tests set java.awt.headless themselves, so no
       # xvfb is required.
@@ -102,6 +110,15 @@ jobs:
           fetch-depth: 0
           # Let semantic-release authenticate with GITHUB_TOKEN from the environment rather than
           # the credentials checkout would otherwise bake into .git/config.
+          persist-credentials: false
+
+      # The Arkitekt runtime is built from source as a composite build (settings.gradle.kts):
+      # it is looked for beside this repository, or here.
+      - uses: actions/checkout@v7
+        with:
+          repository: arkitektio/arkitekt-kotlin
+          ref: v0.1.0
+          path: arkitekt-kotlin
           persist-credentials: false
 
       - uses: actions/setup-java@v6

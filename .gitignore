@@ -10,3 +10,6 @@ build/
 # Release tooling (semantic-release) and its output
 node_modules/
 dist/
+
+# CI checks arkitekt-kotlin out here (locally it sits beside this repository).
+/arkitekt-kotlin/

@@ -105,7 +105,7 @@ class ArkitektTool : AbstractTool() {
         if (orchestrator == null) {
             // This is the classic silent-no-op: report it loudly so it is diagnosable.
             reportError(
-                    "Cannot log in: Runtime services are unavailable " +
+                    "Cannot log in: Arkitekt services are unavailable " +
                             "(ui=$uiService ds=$datasetService ids=$imageDisplayService)."
             )
             return
@@ -128,7 +128,7 @@ class ArkitektTool : AbstractTool() {
     }
 
     /** Kick off a login, wiring the error callback so failures surface (dialog + status + log). */
-    private fun startLogin(orchestrator: Runtime) {
+    private fun startLogin(orchestrator: Arkitekt) {
         // A cached session carries a refresh token, so the login is silent; without one the
         // device-code flow will open a browser. Say which, so an unexpected browser is not a
         // surprise and a silent login does not look like nothing happened.
@@ -149,7 +149,7 @@ class ArkitektTool : AbstractTool() {
      * exist yet (i.e. the menu dialog was never opened). Returns null only if the required
      * services were not injected.
      */
-    private fun ensureOrchestrator(): Runtime? {
+    private fun ensureOrchestrator(): Arkitekt? {
         ArkitektState.arkitektOrNull?.let { return it }
         val ui = uiService ?: return null
         val ds = datasetService ?: return null

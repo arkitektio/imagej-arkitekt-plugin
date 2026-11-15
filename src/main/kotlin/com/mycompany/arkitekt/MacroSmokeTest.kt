@@ -1,5 +1,7 @@
 package com.mycompany.arkitekt
 
+import live.arkitekt.AgentMessage
+import live.arkitekt.agentJson
 import ij.IJ
 import ij.ImagePlus
 import ij.WindowManager

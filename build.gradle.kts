@@ -135,6 +135,9 @@ dependencies {
     ij1Runtime("net.imagej:imagej-legacy:1.2.0")
     // Vendored in-repo Gradle subproject (see settings.gradle.kts + zarr-java/build.gradle.kts).
     // Replaces the old mavenLocal coordinate "dev.zarr:zarr-java:0.0.5-SNAPSHOT" (`mvn install`).
+    // The Arkitekt runtime: App, Runtime, the agent. Substituted by the composite build
+    // (settings.gradle.kts), so no version is named here.
+    implementation("live.arkitekt:arkitekt-kotlin")
     implementation(project(":zarr-java"))
     implementation("com.apollographql.apollo:apollo-runtime:4.0.0")
     implementation("com.google.code.gson:gson:2.11.0")
@@ -210,17 +213,9 @@ apollo {
     // codegen. To refresh them, run `./gradlew downloadSchemas` (see below) —
     // Apollo's `introspection {}` block can't be used because it POSTs an
     // introspection query and expects JSON, while these endpoints return SDL.
-    service("lok") {
-        packageName.set("com.mycompany.lok.graphql")
-        srcDir("src/main/graphql/lok")
-    }
     service("mikro") {
         packageName.set("com.mycompany.mikro.graphql")
         srcDir("src/main/graphql/mikro")
-    }
-    service("rekuest") {
-        packageName.set("com.mycompany.rekuest.graphql")
-        srcDir("src/main/graphql/rekuest")
     }
 }
 
@@ -234,9 +229,7 @@ val schemaHost: String = (findProperty("schemaHost") as String?)
     ?: "http://jhnnsrs-lab"
 
 val schemaServices = mapOf(
-    "Lok" to "src/main/graphql/lok/schema.graphqls",
     "Mikro" to "src/main/graphql/mikro/schema.graphqls",
-    "Rekuest" to "src/main/graphql/rekuest/schema.graphqls",
 )
 
 val downloadSchemaTasks = schemaServices.map { (name, path) ->

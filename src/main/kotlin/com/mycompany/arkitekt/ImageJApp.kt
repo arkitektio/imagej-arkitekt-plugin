@@ -1,6 +1,12 @@
 package com.mycompany.arkitekt
 
-import com.mycompany.rekuest.graphql.type.PortKind
+import live.arkitekt.App
+import live.arkitekt.Handler
+import live.arkitekt.rekuest.graphql.type.PortKind
+import kotlinx.serialization.json.JsonElement
+import net.imagej.DatasetService
+import net.imagej.display.ImageDisplayService
+import org.scijava.ui.UIService
 
 private const val LENS = "@mikro/lens"
 private const val DATASET = "@mikro/arraydataset"
@@ -9,14 +15,39 @@ private const val COLLECTION = "@mikro/annotationcollection"
 /**
  * The ImageJ app: what this plugin is to a deployment, and the actions it offers there.
  *
- * A declaration only. To add an action, write its handler (a function of `(Services, args)`,
- * with the others in Arkitekt.kt) and declare it here: it is registered on the next login.
+ * A declaration only (arkitekt-kotlin's [App]). To add an action, write its handler (a function
+ * of `(Services, args)`, with the others in Arkitekt.kt) and declare it here: it is registered
+ * on the next login.
+ *
+ * The ImageJ services are the host the actions run in: each handler is handed them together
+ * with the login's clients, as [Services].
  */
-fun imagejApp(): App =
-        App("imagej", "0.1.0")
-                .requires("rekuest", "live.arkitekt.rekuest")
-                .requires("mikro", "live.arkitekt.mikro")
-                .requires("datalayer", "live.arkitekt.s3")
+fun imagejApp(
+        uiService: UIService,
+        datasetService: DatasetService,
+        imageDisplayService: ImageDisplayService
+): App {
+    fun inImageJ(
+            handler: suspend (Services, Map<String, JsonElement?>) -> Map<String, JsonElement?>
+    ): Handler = { context, args ->
+        handler(
+                Services(
+                        context[mikroService],
+                        context[datalayerService],
+                        context.unlok,
+                        context.rekuest,
+                        uiService,
+                        datasetService,
+                        imageDisplayService
+                ),
+                args
+        )
+    }
+
+    // rekuest is every app's; mikro and the datalayer are this one's.
+    return App("imagej", "0.1.0")
+                .service(mikroService)
+                .service(datalayerService)
                 .action(
                         "frage",
                         name = "Upload Image",
@@ -25,7 +56,7 @@ fun imagejApp(): App =
                             arg("name", PortKind.STRING, "How would you like to name the image?")
                             returns("dataset", PortKind.STRUCTURE, "The returned dataset", DATASET, nullable = null)
                         },
-                        handler = ::uploadActiveImage
+                        handler = inImageJ(::uploadActiveImage)
                 )
                 .action(
                         "show_lens",
@@ -37,7 +68,7 @@ fun imagejApp(): App =
                             arg("lens", PortKind.STRUCTURE, "The lens to show", LENS)
                             returns("lens", PortKind.STRUCTURE, "The lens that was shown", LENS)
                         },
-                        handler = ::showLens
+                        handler = inImageJ(::showLens)
                 )
                 .action(
                         "show_dataset",
@@ -47,7 +78,7 @@ fun imagejApp(): App =
                             arg("dataset", PortKind.STRUCTURE, "The dataset to show", DATASET)
                             returns("dataset", PortKind.STRUCTURE, "The dataset that was shown", DATASET)
                         },
-                        handler = ::showDataset
+                        handler = inImageJ(::showDataset)
                 )
                 .action(
                         "annotate_lens",
@@ -68,7 +99,7 @@ fun imagejApp(): App =
                                     COLLECTION
                             )
                         },
-                        handler = ::annotateLens
+                        handler = inImageJ(::annotateLens)
                 )
                 .action(
                         "annotate_in_fiji",
@@ -104,7 +135,7 @@ fun imagejApp(): App =
                                     COLLECTION
                             )
                         },
-                        handler = ::annotateInFiji
+                        handler = inImageJ(::annotateInFiji)
                 )
                 .action(
                         "run_image_to_image_macro",
@@ -133,5 +164,6 @@ fun imagejApp(): App =
                                     nullable = null
                             )
                         },
-                        handler = ::runImageToImageMacro
+                        handler = inImageJ(::runImageToImageMacro)
                 )
+}

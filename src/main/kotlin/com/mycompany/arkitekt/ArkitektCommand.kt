@@ -92,7 +92,7 @@ fun main() {
 
 class Dialog : JDialog {
 
-    constructor(ctx: Context, arkitekt: Runtime) : super() {
+    constructor(ctx: Context, arkitekt: Arkitekt) : super() {
         ctx.inject(this)
 
         title = "Arkitekt"

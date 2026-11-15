@@ -38,7 +38,7 @@ JDK 11 and 17 are the only full JDKs installed; the build is pinned to 17. `./gr
 print a benign `Cannot create plugin: ...JavaScriptScriptLanguage` line and then keep running
 (window stays up). On a different machine, point `org.gradle.java.home` at any full JDK ≤ 17.
 
-Tests (`./gradlew test`, JUnit 5, 102 of them) cover the fakts token-rotation rule, expiry math and
+Tests (`./gradlew test`, JUnit 5, 51 here and 51 in arkitekt-kotlin) cover the fakts token-rotation rule, expiry math and
 flat-grant split (`FaktsTest.kt`, `TokenManagerTest.kt`); the agent wire format and close-code
 policy (`AgentProtocolTest.kt`, `CloseCodeTest.kt`); the lens read path — render-axis derivation,
 slice resolution, the permutation and the stride (`LensViewTest.kt`, which needs no network); the
@@ -237,39 +237,48 @@ Lens section below.
 
 ## Architecture
 
-The whole plugin lives in `src/main/kotlin/com/mycompany/arkitekt/`:
-`Fakts.kt` (protocol + models + cache), `TokenManager.kt`, `Auth.kt` (Apollo interceptors),
-`App.kt` (the app declaration), `ImageJApp.kt` (this plugin's app: its actions and ports),
-`Runtime.kt` (login, composition, the agent), `Arkitekt.kt` (service clients, image/Zarr, the
-action handlers),
+The plugin lives in `src/main/kotlin/com/mycompany/arkitekt/` (the Arkitekt runtime itself is
+the arkitekt-kotlin library, see below):
+`ImageJApp.kt` (this plugin's app: its actions and ports), `Orchestrator.kt` (the login and
+serving jobs behind the UI), `Arkitekt.kt` (mikro/datalayer clients, image/Zarr, the action
+handlers),
 `LensView.kt` (the axis algebra of reading a lens), `RoiAnnotation.kt` + `RoiSources.kt`
 (the axis algebra of *writing* a drawn ROI back), `AnnotationRoi.kt` + `RoiSinks.kt`
-(the same algebra inverted: a stored annotation drawn back into a viewer), `Agent.kt` +
-`AgentProtocol.kt`,
-`ArkitektCommand.kt`, `ArkitektTool.kt`, `ArkitektState.kt`, `NodeId.kt`, `MacroSmokeTest.kt`.
+(the same algebra inverted: a stored annotation drawn back into a viewer),
+`ArkitektCommand.kt`, `ArkitektTool.kt`, `ArkitektState.kt`, `MacroSmokeTest.kt`.
 
 **Entry point** — `ArkitektCommand.kt`
 - `@Plugin(menuPath = "Plugins > Arkitekt")` SciJava `Command`. SciJava injects services
   (`UIService`, `DatasetService`, `ImageDisplayService`, `Context`) via `@Parameter`.
 - `run()` opens a Swing `Dialog` with an editable **Server** field (defaults to
-  `DEFAULT_SERVER` = `https://go.arkitekt.live`) and a Login button → `Runtime.login(url, cb)`.
+  `DEFAULT_SERVER` = `https://go.arkitekt.live`) and a Login button → `Arkitekt.login(url, cb)`.
 - `main()` boots a standalone ImageJ for IDE debugging.
 
-**The app pattern** — `App.kt`, `ImageJApp.kt`, `Runtime.kt`
+**The Arkitekt runtime is a library: `arkitekt-kotlin`** (package `live.arkitekt`,
+`github.com/arkitektio/arkitekt-kotlin`, checked out **beside** this repository and built from
+source as a Gradle composite build, see `settings.gradle.kts`; CI checks out a pinned tag into
+`./arkitekt-kotlin`). It holds everything that is not ImageJ or mikro: `App`/`Ports`/`Service`/
+`Context` (the declaration), `Runtime`/`Connection` (login, composition, serving), `Fakts.kt`,
+`TokenManager.kt`, `Auth.kt`, `NodeId.kt`, the agent (`Agent.kt`, `AgentProtocol.kt`,
+`Journal.kt`), the `Unlok` and `Rekuest` clients with the lok and rekuest GraphQL schemas, and
+their tests (`FaktsTest`, `TokenManagerTest`, `AgentProtocolTest`, `CloseCodeTest`,
+`AgentLifecycleTest`, `FakeGateway`). **The sections below that describe fakts, tokens and the
+agent describe code that now lives there.** Change it there, tag it, and raise the `ref` in
+`.github/workflows/ci.yml` (two places).
 
-As in arkitekt (Python) and arkirust: **an `App` is a declaration, a `Runtime` runs it.**
-- `App(identifier, version)` with `.requires(key, service)` and
-  `.action(key, name, description, ports = { arg(…); returns(…) }, handler)`. Declaring touches
-  no server, so a test builds an `App` and hands it to an `Agent` (see `AgentLifecycleTest`).
-- `imagejApp()` (`ImageJApp.kt`) is this plugin's declaration: its three required services and
-  its six actions.
-- `Runtime(app, …)` logs the app in (the app's identifier, version, scopes and requirements
-  *are* the fakts manifest), builds its `Services` (the deployment's clients plus the ImageJ
-  services; what every handler is handed) and serves its actions with an `Agent`.
-  `ArkitektState` holds the one `Runtime`. **The manifest feeds the cache key**: changing the
-  app's identifier, version, requirements or description costs every user one browser login.
+What stays here:
+- `ImageJApp.kt`: `imagejApp(uiService, datasetService, imageDisplayService)` declares the app:
+  `.service(mikroService).service(datalayerService)` and its six actions. Each handler is wrapped
+  (`inImageJ`) so it receives this plugin's `Services`: the login's clients plus the ImageJ
+  services. **The manifest feeds the login cache key**: changing the app's identifier, version,
+  requirements (or their order: rekuest, mikro, datalayer) or description costs every user one
+  browser login.
+- `Orchestrator.kt`: class `Arkitekt`, what the toolbar and dialog drive. It owns the library
+  `Runtime`, the login job and the serving job, and reports to `ArkitektState`.
+- `Arkitekt.kt`: the `Mikro` and `Datalayer` clients (`mikroService`, `datalayerService`),
+  image/Zarr code and the action handlers.
 
-**Orchestration** — `Runtime.kt` (login) and `Arkitekt.kt` (clients, image/Zarr, handlers)
+**Orchestration** — arkitekt-kotlin's `Runtime.kt` (login) and `Arkitekt.kt` here (clients, image/Zarr, handlers)
 - **Auth: fakts protocol 2** (`Fakts.kt`; sequenced by `negotiate`/`getSession` → `Runtime.alogin`).
   Two OAuth2 round-trips, where protocol 1 had four proprietary ones:
   `discover` (`GET {url}/.well-known/fakts` → `FaktsEndpoint`; **`protocol_version` must be
