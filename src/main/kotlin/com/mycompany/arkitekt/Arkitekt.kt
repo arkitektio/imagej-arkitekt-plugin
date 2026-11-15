@@ -210,14 +210,16 @@ class Datalayer(alias: Alias, mikro: Mikro) {
 
 }
 
-class Mikro(alias: Alias, tokens: TokenManager) {
+class Mikro(alias: Alias, tokens: TokenManager, interceptors: List<HttpInterceptor> = emptyList()) {
     private val apolloClient: ApolloClient =
             ApolloClient.Builder()
                     .serverUrl(alias.to_http_path("graphql"))
                     .addHttpInterceptor(AuthorizationInterceptor { tokens.accessToken() })
-                .addHttpInterceptor(LogInterceptor("mikro"))
-                .addInterceptor(AuthRetryInterceptor(tokens))
-                .addInterceptor(ErrorLoggingInterceptor())
+                    .addHttpInterceptor(LogInterceptor("mikro"))
+                    // Whatever else should see every request (a test counts them).
+                    .apply { interceptors.forEach { addHttpInterceptor(it) } }
+                    .addInterceptor(AuthRetryInterceptor(tokens))
+                    .addInterceptor(ErrorLoggingInterceptor())
                     .build()
 
     fun getClient(): ApolloClient {

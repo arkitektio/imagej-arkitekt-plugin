@@ -80,3 +80,14 @@ query GetArrayDataset($id: ID!) {
     }
   }
 }
+
+# The lenses over a dataset. Unsliced, that is its whole lens: the one every dataset is made
+# with, and what "show this dataset as a lens" names.
+query DatasetLenses($id: ID!, $sliced: Boolean) {
+  arrayDataset(id: $id) {
+    id
+    lenses(sliced: $sliced) {
+      id
+    }
+  }
+}

@@ -1,0 +1,63 @@
+# The mikro the integration test runs against: the server, its database, redis and object
+# storage, with a static token (`test`). A copy of mikro's own test stack
+# (github.com/arkitektio/mikro, tests/integration), which is what its Python suite uses.
+services:
+  redis:
+    image: redis:latest
+  db:
+    image: jhnnsrs/daten:latest
+    restart: always
+    environment:
+      POSTGRES_MULTIPLE_DATABASES: mikro
+      POSTGRES_PASSWORD: hello_django
+      POSTGRES_USER: hello_django
+  # Brings the database to the image's release, once, before the server is started: a
+  # service's own start only serves.
+  mikro-migrate:
+    depends_on:
+    - db
+    image: jhnnsrs/mikro:${MIKRO_SERVICE_TAG:-latest}
+    command: arkitekt-service run migrate
+    volumes:
+    - ./configs/mikro.yaml:/workspace/config.yaml
+  mikro:
+    depends_on:
+      redis:
+        condition: service_started
+      db:
+        condition: service_started
+      rustfs:
+        condition: service_started
+      initc:
+        condition: service_started
+      mikro-migrate:
+        condition: service_completed_successfully
+    image: jhnnsrs/mikro:${MIKRO_SERVICE_TAG:-latest}
+    command: arkitekt-service debug
+    stop_grace_period: 1s
+    ports:
+    - "${MIKRO_HOST_PORT:-6580}:80"
+    volumes:
+    - ./configs/mikro.yaml:/workspace/config.yaml
+  rustfs:
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_SECRET_KEY: e8821a29d189789e39c9922a3bfcfb4a
+      RUSTFS_ACCESS_KEY: crappygreysetter
+    image: rustfs/rustfs:latest
+    ports:
+    - "${RUSTFS_HOST_PORT:-6890}:9000"
+  initc:
+    depends_on:
+      rustfs:
+        condition: service_started
+    environment:
+      RUSTFS_HOST: http://rustfs:9000
+      RUSTFS_SECRET_KEY: e8821a29d189789e39c9922a3bfcfb4a
+      RUSTFS_ACCESS_KEY: crappygreysetter
+    image: jhnnsrs/init:latest
+    volumes:
+    - ./configs/rustfs.yaml:/workspace/config.yaml
+
+

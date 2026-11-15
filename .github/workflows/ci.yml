@@ -88,6 +88,43 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # The plugin against a real mikro, started in Docker (src/integrationTest): upload, the
+  # references with mikro's descriptors, constrained actions. Beside the build, not before the
+  # release: an image that cannot be pulled must not hold a release back.
+  integration:
+    name: Integration (real mikro)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: arkitektio/arkitekt-kotlin
+          ref: v0.4.0
+          path: arkitekt-kotlin
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: true
+
+      - name: Integration test
+        run: ./gradlew integrationTest -Dorg.gradle.java.home="$JAVA_HOME" --stacktrace
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-reports
+          path: build/reports/tests/**
+          retention-days: 7
+          if-no-files-found: ignore
+
   # semantic-release: derive the next version from the Conventional Commits since the last tag,
   # rebuild the plugin with that version stamped in (scripts/release-assets.sh), push the v* tag
   # and publish a GitHub Release with the jar, zip and checksums. Config: .releaserc.yml.

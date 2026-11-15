@@ -189,6 +189,33 @@ tasks.test {
     useJUnitPlatform()
 }
 
+// Tests against a real mikro, started in Docker (src/integrationTest/stack). Their own source
+// set and task, so `test` and `build` stay server-free: run them with `./gradlew integrationTest`.
+val integrationTest: SourceSet by sourceSets.creating {
+    // The plugin's classes, and the unit tests' helpers (a login that needs no server).
+    compileClasspath += sourceSets.main.get().output + sourceSets.test.get().output
+    runtimeClasspath += sourceSets.main.get().output + sourceSets.test.get().output
+}
+configurations[integrationTest.implementationConfigurationName].extendsFrom(configurations.testImplementation.get())
+configurations[integrationTest.runtimeOnlyConfigurationName].extendsFrom(configurations.testRuntimeOnly.get())
+dependencies {
+    // The integration test declares its own constrained @Action functions.
+    add("kspIntegrationTest", "live.arkitekt:arkitekt-kotlin-ksp")
+}
+
+tasks.register<Test>("integrationTest") {
+    group = "verification"
+    description = "Runs the plugin against a real mikro (needs Docker)"
+    testClassesDirs = integrationTest.output.classesDirs
+    classpath = integrationTest.runtimeClasspath
+    useJUnitPlatform()
+    shouldRunAfter(tasks.test)
+    // Where the stack's compose file is, and never a stale "up to date": the server is the input.
+    systemProperty("arkitekt.stack", file("src/integrationTest/stack").absolutePath)
+    outputs.upToDateWhen { false }
+    testLogging { events("passed", "failed", "skipped"); showStandardStreams = false }
+}
+
 kotlin {
     // Run/compile on a full JDK 17 (has AWT, so the ImageJ GUI shows; Gradle-8.10 compatible).
     // Bytecode target stays 1.8 (see jvmTarget / sourceCompatibility below) for Fiji distribution.

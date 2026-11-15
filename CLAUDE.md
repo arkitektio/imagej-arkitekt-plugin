@@ -38,6 +38,14 @@ JDK 11 and 17 are the only full JDKs installed; the build is pinned to 17. `./gr
 print a benign `Cannot create plugin: ...JavaScriptScriptLanguage` line and then keep running
 (window stays up). On a different machine, point `org.gradle.java.home` at any full JDK ≤ 17.
 
+**Integration test** (`./gradlew integrationTest`, needs Docker; not part of `build`): starts a
+real mikro (`src/integrationTest/stack`, a copy of mikro's own test stack, static token `test`)
+and runs `MikroIntegrationTest`: an upload through the plugin's write path, the reference an
+action is handed (object + mikro's `descriptors`, one query), the pixels read back through the
+lens, and a constrained `@Action` passing and failing on real descriptors. Its own source set
+(`src/integrationTest`), with its own `@Action` functions run through the processor. CI runs it
+as the `integration` job, beside the build and not gating the release.
+
 Tests (`./gradlew test`, JUnit 5, 51 here and 51 in arkitekt-kotlin) cover the fakts token-rotation rule, expiry math and
 flat-grant split (`FaktsTest.kt`, `TokenManagerTest.kt`); the agent wire format and close-code
 policy (`AgentProtocolTest.kt`, `CloseCodeTest.kt`); the lens read path — render-axis derivation,
