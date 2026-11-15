@@ -11,14 +11,9 @@
 query GetLens($id: ID!) {
   lens(id: $id) {
     id
-    axisNames
-    shape
-    slices {
-      axis
-      start
-      stop
-      step
-    }
+    # What mikro says of this lens (`@mikro/n_space_axes`, …): what a port's requires and
+    # provides are tested against. Fetched with the lens, never asked for separately.
+    descriptors
     coordinateSystem {
       axes {
         order
@@ -26,18 +21,29 @@ query GetLens($id: ID!) {
         type
       }
     }
-    dataset {
-      id
-      name
-      dataArrays {
-        level
-        shape
-        store {
-          id
-          key
-          bucket
-          dtype
-          dimensionNames
+    # Lens is an interface; only an array lens has pixels to read.
+    ... on ArrayLens {
+      axisNames
+      shape
+      slices {
+        axis
+        start
+        stop
+        step
+      }
+      dataset {
+        id
+        name
+        dataArrays {
+          level
+          shape
+          store {
+            id
+            key
+            bucket
+            dtype
+            dimensionNames
+          }
         }
       }
     }
@@ -52,6 +58,7 @@ query GetArrayDataset($id: ID!) {
   arrayDataset(id: $id) {
     id
     name
+    descriptors
     axisNames
     intrinsicSystem {
       axes {

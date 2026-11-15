@@ -20,7 +20,9 @@ import com.mycompany.mikro.graphql.CreateAnnotationMutation
 import com.mycompany.mikro.graphql.UpdateAnnotationMutation
 import com.mycompany.mikro.graphql.CreateArrayDatasetMutation
 import com.mycompany.mikro.graphql.GetArrayDatasetQuery
-import com.mycompany.mikro.graphql.DescribeQuery
+import com.mycompany.mikro.graphql.AnnotationCollectionDescriptorsQuery
+import com.mycompany.mikro.graphql.ArrayDatasetDescriptorsQuery
+import com.mycompany.mikro.graphql.LensDescriptorsQuery
 import com.mycompany.mikro.graphql.GetLensQuery
 import com.mycompany.mikro.graphql.FinishZarrUploadMutation
 import com.mycompany.mikro.graphql.RequestZarrAccessMutation
@@ -251,22 +253,34 @@ class Services(
 // {"__identifier", "object"} form) and writes it back tagged.
 
 /**
- * A mikro structure that travels as its id, and is described by mikro itself: what a port
- * `@Requires` or `@Provides` of it is tested against what the server says of that object.
- * Asked only for a port that states a constraint, so an unconstrained action pays nothing.
+ * A mikro object as an action takes and returns it: its id, and its [descriptors] when mikro
+ * was asked.
+ *
+ * A reference that arrives as an argument is expanded by asking mikro for the object's
+ * `descriptors` (every identified type has the field): the facts a port's `@Requires` is tested
+ * against, and what an action can read to decide what to do. One an action makes itself
+ * (`DatasetRef(id)`) has none until it is tested against a `@Provides`, which asks then.
  */
-open class MikroStructure<T>(identifier: String, of: (String) -> T, id: (T) -> String) :
-        IdStructure<T>(identifier, of, id) {
+abstract class MikroRef(val id: String, val descriptors: Map<String, JsonElement>?)
+
+/** How a [MikroRef] travels: by id, with its descriptors fetched by [fetch] when it is expanded. */
+open class MikroStructure<T : MikroRef>(
+        override val identifier: String,
+        private val of: (String, Map<String, JsonElement>?) -> T,
+        private val fetch: suspend (Mikro, String) -> Any?
+) : Structure<T> {
+    override suspend fun expand(context: live.arkitekt.Context, id: String): T = of(id, described(context, id))
+
+    override fun shrink(value: T): String = value.id
+
     override suspend fun describe(context: live.arkitekt.Context, value: T): Map<String, JsonElement> =
-            context[mikroService].getClient()
-                    .query(DescribeQuery(identifier = identifier, id = shrink(value)))
-                    .execute()
-                    .dataOrThrow()
-                    .describe
-                    .associate { it.key to descriptorJson(it.value) }
+            value.descriptors ?: described(context, value.id)
+
+    private suspend fun described(context: live.arkitekt.Context, id: String): Map<String, JsonElement> =
+            (descriptorJson(fetch(context[mikroService], id)) as? JsonObject).orEmpty()
 }
 
-/** A descriptor's value (GraphQL `Any`: a string, number, boolean, list or map) as JSON. */
+/** A descriptor value (GraphQL `JSON`: a string, number, boolean, list or map) as JSON. */
 fun descriptorJson(value: Any?): JsonElement =
         when (value) {
             null -> JsonNull
@@ -280,19 +294,28 @@ fun descriptorJson(value: Any?): JsonElement =
         }
 
 /** A lens: a per-axis selection over a dataset. */
-class LensRef(val id: String) {
-    companion object : MikroStructure<LensRef>("@mikro/lens", ::LensRef, LensRef::id)
+class LensRef(id: String, descriptors: Map<String, JsonElement>? = null) : MikroRef(id, descriptors) {
+    companion object :
+            MikroStructure<LensRef>("@mikro/lens", ::LensRef, { mikro, id ->
+                mikro.getClient().query(LensDescriptorsQuery(id)).execute().dataOrThrow().lens.descriptors
+            })
 }
 
 /** A whole array dataset. */
-class DatasetRef(val id: String) {
-    companion object : MikroStructure<DatasetRef>("@mikro/arraydataset", ::DatasetRef, DatasetRef::id)
+class DatasetRef(id: String, descriptors: Map<String, JsonElement>? = null) : MikroRef(id, descriptors) {
+    companion object :
+            MikroStructure<DatasetRef>("@mikro/arraydataset", ::DatasetRef, { mikro, id ->
+                mikro.getClient().query(ArrayDatasetDescriptorsQuery(id)).execute().dataOrThrow().arrayDataset.descriptors
+            })
 }
 
 /** A collection of annotations drawn over a lens. */
-class CollectionRef(val id: String) {
+class CollectionRef(id: String, descriptors: Map<String, JsonElement>? = null) : MikroRef(id, descriptors) {
     companion object :
-            MikroStructure<CollectionRef>("@mikro/annotationcollection", ::CollectionRef, CollectionRef::id)
+            MikroStructure<CollectionRef>("@mikro/annotationcollection", ::CollectionRef, { mikro, id ->
+                mikro.getClient().query(AnnotationCollectionDescriptorsQuery(id)).execute()
+                        .dataOrThrow().annotationCollection.descriptors
+            })
 }
 
 // The descriptor keys mikro declares for a lens and a dataset: what a spec constrains. A spec
@@ -442,29 +465,38 @@ private fun assertStoreAgrees(axisNames: List<String>, dimensionNames: List<Stri
 // inferred from the axis names and types together (`resolveRenderAxes`); `Lens.shape` cross-checks
 // what we derived from the slices.
 fun lensViewOf(lens: GetLensQuery.Lens): LensView {
+    val array = arrayOf(lens)
     val axes = lens.coordinateSystem?.axes
             ?.sortedBy { it.order }
             ?.map { AxisSpec(it.name, it.type) }
             ?: throw IllegalStateException("Lens ${lens.id} has no coordinate system, so its axis types are unknown")
 
-    require(axes.map { it.name } == lens.axisNames) {
-        "Lens ${lens.id} reports axis names ${lens.axisNames} but its coordinate system declares ${axes.map { it.name }}"
+    require(axes.map { it.name } == array.axisNames) {
+        "Lens ${lens.id} reports axis names ${array.axisNames} but its coordinate system declares ${axes.map { it.name }}"
     }
 
-    val level0 = lens.dataset.dataArrays.firstOrNull { it.level == 0 }
-            ?: throw IllegalStateException("Dataset ${lens.dataset.id} has no level-0 array to read")
-    assertStoreAgrees(lens.axisNames, level0.store.dimensionNames)
+    val level0 = array.dataset.dataArrays.firstOrNull { it.level == 0 }
+            ?: throw IllegalStateException("Dataset ${array.dataset.id} has no level-0 array to read")
+    assertStoreAgrees(array.axisNames, level0.store.dimensionNames)
 
     return buildLensView(
             storeId = level0.store.id,
             axes = axes,
             storeShape = level0.shape,
-            slices = lens.slices.map { SliceSpec(it.axis, it.start, it.stop, it.step) },
+            slices = array.slices.map { SliceSpec(it.axis, it.start, it.stop, it.step) },
             render = resolveRenderAxes(axes),
-            name = lens.dataset.name,
-            serverShape = lens.shape,
+            name = array.dataset.name,
+            serverShape = array.shape,
     )
 }
+
+// Lens is an interface in mikro: a table, a mesh or a network can be looked at through one too.
+// Only an array lens has pixels, and those are all this plugin can show.
+fun arrayOf(lens: GetLensQuery.Lens): GetLensQuery.OnArrayLens =
+        lens.onArrayLens
+                ?: throw IllegalArgumentException(
+                        "Lens ${lens.id} is a ${lens.__typename}, not an array lens: there are no pixels to show"
+                )
 
 // The same, for a whole ArrayDataset: no slices, and the same locally-inferred render axes.
 suspend fun fetchDatasetView(services: Services, datasetId: String): LensView {
@@ -725,7 +757,6 @@ suspend fun uploadArray(
             CreateArrayDatasetMutation(
                     CreateArrayDatasetInput(
                             data = s3Client.storeId,
-                            scales = emptyList(),
                             name = name,
                             axes = UPLOAD_AXES,
                     )
@@ -877,7 +908,7 @@ suspend fun annotateLens(lens: LensRef, @Inject services: Services): CollectionR
     val store = services.datalayer.requestAccess(view.storeId)
     val dataset = loadLensView(services, store, view)
 
-    val collectionId = createAnnotationCollection(services, lensId, found.dataset.name, view)
+    val collectionId = createAnnotationCollection(services, lensId, arrayOf(found).dataset.name, view)
 
     runAnnotationSession(services, view, dataset, collectionId, emptyList(), "annotate_lens")
 
@@ -936,7 +967,7 @@ suspend fun annotateInFiji(
     val collectionId: String
     val prefill: List<PrefillShape>
     if (collection == null) {
-        collectionId = createAnnotationCollection(services, lensId, found.dataset.name, view)
+        collectionId = createAnnotationCollection(services, lensId, arrayOf(found).dataset.name, view)
         prefill = emptyList()
     } else {
         collectionId = collection.id

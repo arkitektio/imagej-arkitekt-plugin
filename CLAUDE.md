@@ -277,10 +277,16 @@ What stays here:
   is filled by the app.
 - **Requires and provides**: a spec is a type alias (`@Requires(N_SPACE_AXES, EQUALS, "3")
   @Provides(…) typealias Volume = LensRef`), or `@Requires` on a parameter / `@Provides` on the
-  function; the keys mikro declares are the `N_*` constants in `Arkitekt.kt`. The references are
-  `MikroStructure`s: for a constrained port the handler asks mikro (`describe(identifier, id)`,
-  `Describe.graphql`) and fails the task when the object does not fit. No action states a
-  constraint yet, so today nothing is asked.
+  function; the keys mikro declares are the `N_*` constants in `Arkitekt.kt`.
+- **References carry `descriptors`** (`MikroRef`): expanding an argument asks mikro for the
+  object's `descriptors` field (`Describe.graphql`; every identified mikro type has it), so an
+  action can read `lens.descriptors` and a `@Requires` is tested with no further query. One an
+  action makes itself (`DatasetRef(id)`) has `null` and is only asked about when a `@Provides`
+  is tested. Every expanded argument costs one small query, constrained or not.
+- **`Lens` is an interface in mikro** (array, table, mesh, network … lenses). `GetLens` selects
+  the pixel fields under `... on ArrayLens`, and `arrayOf(lens)` refuses any other kind.
+  `src/main/graphql/mikro/schema.graphqls` is a copy of the server's: refresh it with
+  `./gradlew downloadMikroSchema -PschemaHost=http://<host>` when a query is refused.
 - `ImageJApp.kt`: `imagejApp(uiService, datasetService, imageDisplayService)` declares the app:
   `.service(mikroService).service(datalayerService)`, `.provide { context -> Services(…) }`
   (the login's clients plus the ImageJ services) and `.actions(ShowLensAction, …)`. **The
