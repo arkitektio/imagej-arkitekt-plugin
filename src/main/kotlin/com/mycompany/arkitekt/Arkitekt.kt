@@ -20,6 +20,7 @@ import com.mycompany.mikro.graphql.CreateAnnotationMutation
 import com.mycompany.mikro.graphql.UpdateAnnotationMutation
 import com.mycompany.mikro.graphql.CreateArrayDatasetMutation
 import com.mycompany.mikro.graphql.GetArrayDatasetQuery
+import com.mycompany.mikro.graphql.DescribeQuery
 import com.mycompany.mikro.graphql.GetLensQuery
 import com.mycompany.mikro.graphql.FinishZarrUploadMutation
 import com.mycompany.mikro.graphql.RequestZarrAccessMutation
@@ -47,6 +48,7 @@ import ucar.ma2.DataType as UcarDataType
 import kotlinx.coroutines.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -248,21 +250,66 @@ class Services(
 // under its identifier; arkitekt-kotlin reads the id off the wire (bare, or in the shrunk
 // {"__identifier", "object"} form) and writes it back tagged.
 
+/**
+ * A mikro structure that travels as its id, and is described by mikro itself: what a port
+ * `@Requires` or `@Provides` of it is tested against what the server says of that object.
+ * Asked only for a port that states a constraint, so an unconstrained action pays nothing.
+ */
+open class MikroStructure<T>(identifier: String, of: (String) -> T, id: (T) -> String) :
+        IdStructure<T>(identifier, of, id) {
+    override suspend fun describe(context: live.arkitekt.Context, value: T): Map<String, JsonElement> =
+            context[mikroService].getClient()
+                    .query(DescribeQuery(identifier = identifier, id = shrink(value)))
+                    .execute()
+                    .dataOrThrow()
+                    .describe
+                    .associate { it.key to descriptorJson(it.value) }
+}
+
+/** A descriptor's value (GraphQL `Any`: a string, number, boolean, list or map) as JSON. */
+fun descriptorJson(value: Any?): JsonElement =
+        when (value) {
+            null -> JsonNull
+            is JsonElement -> value
+            is String -> JsonPrimitive(value)
+            is Number -> JsonPrimitive(value)
+            is Boolean -> JsonPrimitive(value)
+            is List<*> -> JsonArray(value.map { descriptorJson(it) })
+            is Map<*, *> -> JsonObject(value.entries.associate { it.key.toString() to descriptorJson(it.value) })
+            else -> JsonPrimitive(value.toString())
+        }
+
 /** A lens: a per-axis selection over a dataset. */
 class LensRef(val id: String) {
-    companion object : IdStructure<LensRef>("@mikro/lens", ::LensRef, LensRef::id)
+    companion object : MikroStructure<LensRef>("@mikro/lens", ::LensRef, LensRef::id)
 }
 
 /** A whole array dataset. */
 class DatasetRef(val id: String) {
-    companion object : IdStructure<DatasetRef>("@mikro/arraydataset", ::DatasetRef, DatasetRef::id)
+    companion object : MikroStructure<DatasetRef>("@mikro/arraydataset", ::DatasetRef, DatasetRef::id)
 }
 
 /** A collection of annotations drawn over a lens. */
 class CollectionRef(val id: String) {
     companion object :
-            IdStructure<CollectionRef>("@mikro/annotationcollection", ::CollectionRef, CollectionRef::id)
+            MikroStructure<CollectionRef>("@mikro/annotationcollection", ::CollectionRef, CollectionRef::id)
 }
+
+// The descriptor keys mikro declares for a lens and a dataset: what a spec constrains. A spec
+// is a type alias, as in mikro's Python `specs.py`, and an action takes it like any structure:
+//
+//     @Requires(N_SPACE_AXES, DescriptorOperator.EQUALS, "3")
+//     @Provides(N_SPACE_AXES, DescriptorOperator.EQUALS, "3")
+//     typealias Volume = LensRef
+//
+// "One channel" is `N_CHANNELS LTE 1`, an extent, never "no channel axis".
+const val N_SPACE_AXES = "@mikro/n_space_axes"
+const val N_TIME_AXES = "@mikro/n_time_axes"
+const val N_CHANNEL_AXES = "@mikro/n_channel_axes"
+const val N_CHANNELS = "@mikro/n_channels"
+const val N_TIMEPOINTS = "@mikro/n_timepoints"
+const val VALUE_KIND = "@mikro/value_kind"
+const val DTYPE = "@mikro/dtype"
 
 fun <T : RealType<T>> imgPlusToCTZYXUcarArray(imgPlus: ImgPlus<T>): ucar.ma2.Array {
     val numDimensions = imgPlus.numDimensions()

@@ -1,0 +1,8 @@
+# What mikro says of one object: its descriptors, the facts a port's requires and provides are
+# stated over (`@mikro/n_space_axes`, `@mikro/n_channels`, …).
+query Describe($identifier: String!, $id: ID!) {
+  describe(identifier: $identifier, id: $id) {
+    key
+    value
+  }
+}
