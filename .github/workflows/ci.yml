@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: arkitektio/arkitekt-kotlin
-          ref: v0.1.0
+          ref: v0.1.1
           path: arkitekt-kotlin
 
       # Full JDK 17: Gradle 8.10 cannot run on a newer JDK, and the build needs AWT present
@@ -117,7 +117,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: arkitektio/arkitekt-kotlin
-          ref: v0.1.0
+          ref: v0.1.1
           path: arkitekt-kotlin
           persist-credentials: false
 
