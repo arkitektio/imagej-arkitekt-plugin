@@ -51,7 +51,7 @@ whole connection lifecycle
 gateway. The fake exists because the live gateway currently refuses our registration for a
 server-side reason (see the org-claim note below) — without it, everything past REGISTER would be
 verified only by reading, and that is exactly where a mishandled close hangs the agent or starts an
-eviction war. The tests boot a headless ImageJ context (~250ms) to build a real `App`.
+eviction war. The tests boot a headless ImageJ context (~250ms) to build real `Services`.
 The fakts device-code flow still needs a live coordination server and is verified by hand. Bytecode target is pinned to **Java 8**
 (`jvmTarget = "1.8"`, `sourceCompatibility/targetCompatibility = "1.8"`) for Fiji distribution,
 even though the toolchain/run JVM is 17 — don't introduce APIs above Java 8 in source.
@@ -239,7 +239,9 @@ Lens section below.
 
 The whole plugin lives in `src/main/kotlin/com/mycompany/arkitekt/`:
 `Fakts.kt` (protocol + models + cache), `TokenManager.kt`, `Auth.kt` (Apollo interceptors),
-`Arkitekt.kt` (orchestration, image/Zarr, action handlers), `Actions.kt` (port definitions),
+`App.kt` (the app declaration), `ImageJApp.kt` (this plugin's app: its actions and ports),
+`Runtime.kt` (login, composition, the agent), `Arkitekt.kt` (service clients, image/Zarr, the
+action handlers),
 `LensView.kt` (the axis algebra of reading a lens), `RoiAnnotation.kt` + `RoiSources.kt`
 (the axis algebra of *writing* a drawn ROI back), `AnnotationRoi.kt` + `RoiSinks.kt`
 (the same algebra inverted: a stored annotation drawn back into a viewer), `Agent.kt` +
@@ -250,11 +252,25 @@ The whole plugin lives in `src/main/kotlin/com/mycompany/arkitekt/`:
 - `@Plugin(menuPath = "Plugins > Arkitekt")` SciJava `Command`. SciJava injects services
   (`UIService`, `DatasetService`, `ImageDisplayService`, `Context`) via `@Parameter`.
 - `run()` opens a Swing `Dialog` with an editable **Server** field (defaults to
-  `DEFAULT_SERVER` = `https://go.arkitekt.live`) and a Login button → `Arkitekt.login(url, cb)`.
+  `DEFAULT_SERVER` = `https://go.arkitekt.live`) and a Login button → `Runtime.login(url, cb)`.
 - `main()` boots a standalone ImageJ for IDE debugging.
 
-**Orchestration** — `Arkitekt.kt` (the bulk of the code)
-- **Auth: fakts protocol 2** (`Fakts.kt`; sequenced by `negotiate`/`getSession` → `alogin`).
+**The app pattern** — `App.kt`, `ImageJApp.kt`, `Runtime.kt`
+
+As in arkitekt (Python) and arkirust: **an `App` is a declaration, a `Runtime` runs it.**
+- `App(identifier, version)` with `.requires(key, service)` and
+  `.action(key, name, description, ports = { arg(…); returns(…) }, handler)`. Declaring touches
+  no server, so a test builds an `App` and hands it to an `Agent` (see `AgentLifecycleTest`).
+- `imagejApp()` (`ImageJApp.kt`) is this plugin's declaration: its three required services and
+  its six actions.
+- `Runtime(app, …)` logs the app in (the app's identifier, version, scopes and requirements
+  *are* the fakts manifest), builds its `Services` (the deployment's clients plus the ImageJ
+  services; what every handler is handed) and serves its actions with an `Agent`.
+  `ArkitektState` holds the one `Runtime`. **The manifest feeds the cache key**: changing the
+  app's identifier, version, requirements or description costs every user one browser login.
+
+**Orchestration** — `Runtime.kt` (login) and `Arkitekt.kt` (clients, image/Zarr, handlers)
+- **Auth: fakts protocol 2** (`Fakts.kt`; sequenced by `negotiate`/`getSession` → `Runtime.alogin`).
   Two OAuth2 round-trips, where protocol 1 had four proprietary ones:
   `discover` (`GET {url}/.well-known/fakts` → `FaktsEndpoint`; **`protocol_version` must be
   `"2"`** — a protocol-1 deployment fails here, loudly, and there is no compatibility mode) →
@@ -311,7 +327,7 @@ The whole plugin lives in `src/main/kotlin/com/mycompany/arkitekt/`:
   `(alias, mikro)` and is *not* a token consumer — it authenticates transitively through Mikro's
   client, issuing fresh S3 session credentials per request via mikro mutations
   (`RequestZarrUpload`/`FinishZarrUpload`/`RequestZarrAccess`) and building an `S3Store` for
-  Zarr. All bundled into the `App` god-object passed to every action.
+  Zarr. All bundled into `Services`, which is passed to every action.
 - **Upload (ImageJ -> Zarr)**: `imgPlusToCTZYXUcarArray` flattens an ImageJ `ImgPlus` into a
   fixed **c,t,z,y,x** `ucar.ma2.Array` (preserving the source dtype); `uploadArray` writes it as a
   Blosc-compressed Zarr array to S3, then registers it with `CreateArrayDatasetMutation`, whose
@@ -319,12 +335,12 @@ The whole plugin lives in `src/main/kotlin/com/mycompany/arkitekt/`:
   place a fixed order survives, and `generateChunkShape` hard-requires rank 5 — generalising the
   writer to arbitrary axes is a separate change.
 - **Download (Lens -> ImageJ)**: see the Lens section below.
-- **Action handlers**: `runX` (upload active image), `showLens` (display a lens), `showDataset`
+- **Action handlers**: `uploadActiveImage`, `showLens` (display a lens), `showDataset`
   (display a whole dataset), `annotateLens` (display a lens and save drawn ROIs — see below),
   `annotateInFiji` (the same, two-way: pull an existing collection's shapes in first) and
   `runImageToImageMacro`. Each has signature
-  `suspend (App, Map<String, JsonElement?>) -> Map<String, JsonElement?>`; their typed port
-  definitions live in `Actions.kt` (`buildFunctionRegistry`).
+  `suspend (Services, Map<String, JsonElement?>) -> Map<String, JsonElement?>` (`Handler`); they
+  are top-level functions, declared as actions with their ports in `ImageJApp.kt`.
 
 **Reading a Lens (mikro v2)** — `LensView.kt` + `loadLensView`/`buildDataset` in `Arkitekt.kt`
 
@@ -477,8 +493,8 @@ mikro has no annotation subscription, and re-querying each poll could not tell a
 server-side from one this session has not pushed yet.
 
 **Agent / remote-invocation runtime** — `Agent.kt` + `AgentProtocol.kt`
-- `FunctionRegistry` maps an `interface` name → (handler fn, `DefinitionInput`). Handlers are
-  registered in `alogin` with their typed Arkitekt port definitions (args/returns).
+- The `Agent` is handed the `App` and its `Services`: `app.actions` maps an `interface` name →
+  `Action` (its `DefinitionInput` and handler).
 - `Agent.createAgent(name)` calls `ensureAgent(AgentInput{name})`, then `registerFunctions()`
   advertises all implementations in one `implementAgent(ImplementAgentInput{implementations})` call
   (the rekuest-next agent API — there is no `instanceId`/`setExtensionImplementations` anymore).
@@ -544,12 +560,11 @@ server-side from one this session has not pushed yet.
   as `CANCELLED`. There is no `seq`, `EVENT_ACK` or `INIT.inquiries` any more.
 
 ### Adding a new remote action
-1. Write a `suspend (App, Map<String, JsonElement?>) -> Map<String, JsonElement?>` handler
-   (usually in `Arkitekt.kt`, alongside `runX`/`showLens`).
-2. In `Actions.kt`'s `buildFunctionRegistry`,
-   `registry.register_function(<interface name>, DefinitionInput(...), arkitekt::yourFn)`.
-   `DefinitionInput` requires `key`, `version`, `name`, `kind`; args are `ArgPortInput`, returns are
-   `ReturnPortInput` (separate types).
+1. Write a `suspend (Services, Map<String, JsonElement?>) -> Map<String, JsonElement?>` handler
+   (a top-level function in `Arkitekt.kt`, alongside `showLens`).
+2. Declare it in `ImageJApp.kt`:
+   `.action("key", name = "…", description = "…", ports = { arg(…); returns(…) }, handler = ::yourFn)`.
+   The handler's return map must carry every declared return key.
 3. Rebuild — the implementation is auto-advertised on next login; the server can then `ASSIGN` it.
 
 ## Conventions & gotchas
@@ -561,7 +576,7 @@ server-side from one this session has not pushed yet.
   position reads the wrong pixels and shows them as if they were right. Both paths preserve the
   source dtype; they do not cast to UINT32.
 - Errors are mostly surfaced via `println` and a Logger, not structured logging.
-- The agent name is hard-coded to `"my_agent"` in `alogin`.
+- The agent is named after the app (`app.identifier`).
 - `requested_client_kind` is sent as `"desktop"`. The server also accepts
   `requested_client_role` (`interface`|`agent`, default `interface`) — we send nothing, so we
   register as an `interface` even though this plugin *is* an agent. Worth confirming with the

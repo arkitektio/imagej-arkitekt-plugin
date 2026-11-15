@@ -34,9 +34,9 @@ class AgentLifecycleTest {
         gateway?.stop()
     }
 
-    private fun app(tokens: TokenManager, alias: Alias): App {
+    private fun services(tokens: TokenManager, alias: Alias): Services {
         val mikro = Mikro(alias, tokens)
-        return App(
+        return Services(
                 mikro,
                 Datalayer(alias, mikro),
                 Unlok(alias, tokens),
@@ -49,7 +49,7 @@ class AgentLifecycleTest {
 
     private fun agentAgainst(
             gw: FakeGateway,
-            registry: FunctionRegistry = FunctionRegistry(),
+            app: App = App("test", "0.1.0"),
             staleWaitSeconds: Long = 35,
             budgetResetSeconds: Double = 30.0
     ): Agent {
@@ -60,8 +60,8 @@ class AgentLifecycleTest {
         return Agent(
                 alias,
                 tokens,
-                registry,
-                app(tokens, alias),
+                app,
+                services(tokens, alias),
                 staleTakeoverWaitSeconds = staleWaitSeconds,
                 budgetResetAfterSeconds = budgetResetSeconds
         )
@@ -210,13 +210,11 @@ class AgentLifecycleTest {
         // Backend delivery is at-least-once, so the same task can arrive twice. The server dedups
         // the resulting report but not the side effect — running an upload twice is a real bug.
         val runs = AtomicInteger(0)
-        val registry = FunctionRegistry()
-        val handler: suspend (App, Map<String, JsonElement?>) -> Map<String, JsonElement?> = { _, _ ->
+        val app = App("test", "0.1.0").action("echo", name = "Echo") { _, _ ->
             runs.incrementAndGet()
             kotlinx.coroutines.delay(300)
             emptyMap()
         }
-        registry.register_function("echo", testDefinition("echo"), handler)
 
         val assign = """{"type":"ASSIGN","id":"a1","interface":"echo","task":"t-1","args":{},
             "user":"1","org":"1","action":"a","implementation":"i","pos":1}"""
@@ -230,7 +228,7 @@ class AgentLifecycleTest {
                 drain()
             }
         }
-        val agent = agentAgainst(gw, registry)
+        val agent = agentAgainst(gw, app)
         withTimeout(30_000) { agent.provideForever() }
 
         assertEquals(1, runs.get(), "the duplicate ASSIGN must not re-run the handler")

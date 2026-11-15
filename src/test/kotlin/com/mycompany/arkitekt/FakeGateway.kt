@@ -115,12 +115,3 @@ fun fixedTokenManager(token: String = "test-token"): TokenManager {
     )
     return TokenManager(FaktsClient(), endpoint, fresh, fakts) { _, _, _ -> }
 }
-
-/** A minimal port definition; these tests exercise the socket, not the definition. */
-fun testDefinition(key: String) =
-        com.mycompany.rekuest.graphql.type.DefinitionInput(
-                key = key,
-                version = "0.1.0",
-                name = key,
-                kind = com.mycompany.rekuest.graphql.type.ActionKind.FUNCTION
-        )

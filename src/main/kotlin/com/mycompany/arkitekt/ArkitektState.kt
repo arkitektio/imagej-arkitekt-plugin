@@ -14,7 +14,7 @@ sealed class ConnState {
 }
 
 /**
- * Process-wide holder for the single [Arkitekt] orchestrator and the current connection
+ * Process-wide holder for the single [Runtime] orchestrator and the current connection
  * state. Both the SciJava toolbar tool ([ArkitektTool]) and the menu dialog ([Dialog]) talk
  * to the same instance, so the toolbar icon and the dialog labels never disagree and only one
  * agent provide-loop / WebSocket is ever running.
@@ -24,7 +24,7 @@ sealed class ConnState {
  */
 object ArkitektState {
     @Volatile
-    private var instance: Arkitekt? = null
+    private var instance: Runtime? = null
 
     @Volatile
     var state: ConnState = ConnState.Disconnected
@@ -38,12 +38,12 @@ object ArkitektState {
             uiService: UIService,
             datasetService: DatasetService,
             imageDisplayService: ImageDisplayService
-    ): Arkitekt =
+    ): Runtime =
             instance
-                    ?: Arkitekt(uiService, datasetService, imageDisplayService).also { instance = it }
+                    ?: Runtime(imagejApp(), uiService, datasetService, imageDisplayService).also { instance = it }
 
     /** The shared orchestrator if it has already been created, else null. */
-    val arkitektOrNull: Arkitekt?
+    val arkitektOrNull: Runtime?
         get() = instance
 
     /** Register a listener; the current state is replayed immediately so it can paint. */
@@ -56,7 +56,7 @@ object ArkitektState {
         listeners.remove(listener)
     }
 
-    /** Called by [Arkitekt] as login/logout progress; notifies all listeners. */
+    /** Called by [Runtime] as login/logout progress; notifies all listeners. */
     fun setState(newState: ConnState) {
         state = newState
         for (listener in listeners) {

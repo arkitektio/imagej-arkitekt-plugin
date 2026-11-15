@@ -314,7 +314,7 @@ class LensViewTest {
         ImageJ()
     }
 
-    private fun app(): App = App(
+    private fun app(): Services = Services(
             Mikro(localAlias(1), fixedTokenManager()),
             Datalayer(localAlias(1), Mikro(localAlias(1), fixedTokenManager())),
             Unlok(localAlias(1), fixedTokenManager()),

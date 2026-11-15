@@ -4,7 +4,6 @@ import com.apollographql.apollo.api.Optional
 import com.mycompany.rekuest.graphql.EnsureAgentMutation
 import com.mycompany.rekuest.graphql.ImplementAgentMutation
 import com.mycompany.rekuest.graphql.type.AgentInput
-import com.mycompany.rekuest.graphql.type.DefinitionInput
 import com.mycompany.rekuest.graphql.type.ImplementAgentInput
 import com.mycompany.rekuest.graphql.type.ImplementationInput
 import io.ktor.client.*
@@ -20,32 +19,15 @@ import kotlinx.serialization.json.longOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
-// A registry mapping an interface name -> (implementation function, its DefinitionInput).
-// Each function takes (App, args) and returns the yielded values.
-public class FunctionRegistry(
-    private val functions: MutableMap<String, suspend (App, Map<String, JsonElement?>) -> Map<String, JsonElement?>> = mutableMapOf(),
-    public val definitions: MutableMap<String, DefinitionInput> = mutableMapOf()
-) {
-    fun get_function(
-        function_name: String
-    ): (suspend (App, Map<String, JsonElement?>) -> Map<String, JsonElement?>)? = functions[function_name]
-
-
-    fun register_function(
-        at: String,
-        definitionInput: DefinitionInput,
-        function: suspend (App, Map<String, JsonElement?>) -> Map<String, JsonElement?>
-    ) {
-        functions[at] = function
-        definitions[at] = definitionInput
-    }
-}
-
+/**
+ * Serves an [App]'s actions over the agent socket (`/agi`): registers them, runs what the server
+ * assigns with the app's [Services], and reports back.
+ */
 public class Agent(
         private val alias: Alias,
         private val tokens: TokenManager,
-        private val registry: FunctionRegistry,
         private val app: App,
+        private val services: Services,
         /**
          * How long to let a live incumbent's lease go stale before trying again.
          *
@@ -67,17 +49,17 @@ public class Agent(
     suspend fun createAgent(name: String): Result<Unit> {
         return kotlin.runCatching {
             val request = EnsureAgentMutation(AgentInput(name = Optional.present(name)))
-            app.rekuest.getClient().mutation(request).execute().data
+            services.rekuest.getClient().mutation(request).execute().data
         }
     }
 
     // Advertise all registered implementations to the server in a single implementAgent call.
     suspend fun registerFunctions() {
         val implementations =
-                registry.definitions.entries.map { (functionName, definition) ->
+                app.actions.values.map { action ->
                     ImplementationInput(
-                            definition = definition,
-                            `interface` = Optional.present(functionName)
+                            definition = action.definition,
+                            `interface` = Optional.present(action.key)
                     )
                 }
 
@@ -86,7 +68,7 @@ public class Agent(
                         ImplementAgentInput(implementations = Optional.present(implementations))
                 )
 
-        val response = app.rekuest.getClient().mutation(mutation).execute()
+        val response = services.rekuest.getClient().mutation(mutation).execute()
         println("implementAgent -> ${response.data}")
     }
 
@@ -134,7 +116,7 @@ public class Agent(
             println("Ignoring duplicate ASSIGN for task ${msg.task}")
             return
         }
-        val func = registry.get_function(msg.functionName)
+        val func = app.actions[msg.functionName]?.handler
         val job =
                 tasks.launch(start = CoroutineStart.LAZY) {
                     try {
@@ -144,7 +126,7 @@ public class Agent(
                             return@launch
                         }
                         report(AgentEvent.Started(msg.task))
-                        val returns = func(app, msg.args)
+                        val returns = func(services, msg.args)
                         report(AgentEvent.Yield(msg.task, returns))
                         report(AgentEvent.Completed(msg.task))
                     } catch (e: CancellationException) {
