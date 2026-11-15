@@ -267,12 +267,19 @@ agent describe code that now lives there.** Change it there, tag it, and raise t
 `.github/workflows/ci.yml` (two places).
 
 What stays here:
+- **Actions are `@Action` functions** (in `Arkitekt.kt`). arkitekt-kotlin's KSP processor
+  (`ksp("live.arkitekt:arkitekt-kotlin-ksp")`) reads each at compile time and writes
+  `<FunctionName>Action` into `build/generated/ksp/`: ports from the signature, the name and
+  descriptions from the KDoc (first paragraph = name when more follow, `@param`, `@return`),
+  `@Action(key = "frage")` and `@Returns("dataset")` where the wire name differs. **Editing a
+  KDoc or a parameter changes the registered definition.** `LensRef`, `DatasetRef` and
+  `CollectionRef` are the structures (an id under an identifier). `@Inject services: Services`
+  is filled by the app.
 - `ImageJApp.kt`: `imagejApp(uiService, datasetService, imageDisplayService)` declares the app:
-  `.service(mikroService).service(datalayerService)` and its six actions. Each handler is wrapped
-  (`inImageJ`) so it receives this plugin's `Services`: the login's clients plus the ImageJ
-  services. **The manifest feeds the login cache key**: changing the app's identifier, version,
-  requirements (or their order: rekuest, mikro, datalayer) or description costs every user one
-  browser login.
+  `.service(mikroService).service(datalayerService)`, `.provide { context -> Services(…) }`
+  (the login's clients plus the ImageJ services) and `.actions(ShowLensAction, …)`. **The
+  manifest feeds the login cache key**: changing the app's identifier, version, requirements
+  (or their order: rekuest, mikro, datalayer) or description costs every user one browser login.
 - `Orchestrator.kt`: class `Arkitekt`, what the toolbar and dialog drive. It owns the library
   `Runtime`, the login job and the serving job, and reports to `ArkitektState`.
 - `Arkitekt.kt`: the `Mikro` and `Datalayer` clients (`mikroService`, `datalayerService`),
@@ -348,8 +355,7 @@ What stays here:
   (display a whole dataset), `annotateLens` (display a lens and save drawn ROIs — see below),
   `annotateInFiji` (the same, two-way: pull an existing collection's shapes in first) and
   `runImageToImageMacro`. Each has signature
-  `suspend (Services, Map<String, JsonElement?>) -> Map<String, JsonElement?>` (`Handler`); they
-  are top-level functions, declared as actions with their ports in `ImageJApp.kt`.
+  typed parameters and a typed return; they are top-level `@Action` functions.
 
 **Reading a Lens (mikro v2)** — `LensView.kt` + `loadLensView`/`buildDataset` in `Arkitekt.kt`
 
@@ -569,11 +575,10 @@ server-side from one this session has not pushed yet.
   as `CANCELLED`. There is no `seq`, `EVENT_ACK` or `INIT.inquiries` any more.
 
 ### Adding a new remote action
-1. Write a `suspend (Services, Map<String, JsonElement?>) -> Map<String, JsonElement?>` handler
-   (a top-level function in `Arkitekt.kt`, alongside `showLens`).
-2. Declare it in `ImageJApp.kt`:
-   `.action("key", name = "…", description = "…", ports = { arg(…); returns(…) }, handler = ::yourFn)`.
-   The handler's return map must carry every declared return key.
+1. Write a top-level function in `Arkitekt.kt` marked `@Action`, with a KDoc (name, description,
+   `@param`s, `@return`). Its parameters are the ports; take `@Inject services: Services` for
+   the clients and ImageJ. Return a structure (`DatasetRef(id)`), a scalar, a list, or nothing.
+2. Add its generated `<FunctionName>Action` to `.actions(…)` in `ImageJApp.kt`.
 3. Rebuild — the implementation is auto-advertised on next login; the server can then `ASSIGN` it.
 
 ## Conventions & gotchas

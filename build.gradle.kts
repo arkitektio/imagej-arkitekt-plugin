@@ -4,6 +4,8 @@ plugins {
     kotlin("kapt") version "2.1.0"
     kotlin("plugin.serialization") version "2.1.0"
     id("com.apollographql.apollo") version "4.0.0"
+    // Runs arkitekt-kotlin's processor: every @Action function gets its declaration written.
+    id("com.google.devtools.ksp") version "2.1.0-1.0.29"
     id("maven-publish") // Add this line
     // Bundles the plugin + its dependencies into ONE jar with the third-party packages relocated,
     // so nothing we ship can collide with the copies Fiji already has in its jars/ dir. See the
@@ -138,6 +140,7 @@ dependencies {
     // The Arkitekt runtime: App, Runtime, the agent. Substituted by the composite build
     // (settings.gradle.kts), so no version is named here.
     implementation("live.arkitekt:arkitekt-kotlin")
+    ksp("live.arkitekt:arkitekt-kotlin-ksp")
     implementation(project(":zarr-java"))
     implementation("com.apollographql.apollo:apollo-runtime:4.0.0")
     implementation("com.google.code.gson:gson:2.11.0")

@@ -230,8 +230,9 @@ val mikroService = Service("mikro", "live.arkitekt.mikro") { Mikro(it.alias, it.
 val datalayerService = Service("datalayer", "live.arkitekt.s3") { Datalayer(it.alias, it[mikroService]) }
 
 /**
- * What this plugin's handlers work with: the deployment's clients (from the login's
- * [Context]) and the ImageJ they run in.
+ * What this plugin's actions work with: the deployment's clients (from the login's
+ * [Context]) and the ImageJ they run in. Provided by the app, so an action takes it with
+ * `@Inject services: Services`.
  */
 class Services(
         public val mikro: Mikro,
@@ -243,24 +244,24 @@ class Services(
         public var imageDisplayService: ImageDisplayService
 )
 
-// A rekuest STRUCTURE arg arrives either as a bare id string or, more commonly, as the shrunk
-// wire form {"__identifier": "@mikro/lens", "object": "<id>"} (see rekuest-next
-// structures/serialization/postman.py:ashrink_arg). This returns the id for both shapes.
-fun structureArgId(value: JsonElement?): String {
-    if (value == null) throw IllegalArgumentException("Missing structure argument")
-    return when (value) {
-        is JsonObject ->
-                value["object"]?.jsonPrimitive?.contentOrNull
-                        ?: throw IllegalArgumentException("Structure arg missing 'object': $value")
-        else -> value.jsonPrimitive.content
-    }
+// What the actions take and return: mikro's structures, by id. Each is a `STRUCTURE` port
+// under its identifier; arkitekt-kotlin reads the id off the wire (bare, or in the shrunk
+// {"__identifier", "object"} form) and writes it back tagged.
+
+/** A lens: a per-axis selection over a dataset. */
+class LensRef(val id: String) {
+    companion object : IdStructure<LensRef>("@mikro/lens", ::LensRef, LensRef::id)
 }
 
-// Builds the shrunk wire form rekuest's aexpand_return requires for a STRUCTURE return — a bare
-// id string is rejected there, it must be the tagged {"__identifier", "object"} dict.
-fun structureReturn(identifier: String, id: String): JsonElement = buildJsonObject {
-    put("__identifier", identifier)
-    put("object", id)
+/** A whole array dataset. */
+class DatasetRef(val id: String) {
+    companion object : IdStructure<DatasetRef>("@mikro/arraydataset", ::DatasetRef, DatasetRef::id)
+}
+
+/** A collection of annotations drawn over a lens. */
+class CollectionRef(val id: String) {
+    companion object :
+            IdStructure<CollectionRef>("@mikro/annotationcollection", ::CollectionRef, CollectionRef::id)
 }
 
 fun <T : RealType<T>> imgPlusToCTZYXUcarArray(imgPlus: ImgPlus<T>): ucar.ma2.Array {
@@ -586,7 +587,8 @@ fun runMacroOnDataset(services: Services, dataset: Dataset, macro: String): Data
 
 // ---- The actions' handlers --------------------------------------------------------------
 //
-// Plain functions of (Services, args): ImageJApp.kt declares them as the app's actions.
+// Plain functions marked @Action: arkitekt-kotlin's processor reads their signatures and KDoc
+// and writes a declaration for each (`ShowLensAction`, …), which ImageJApp.kt registers.
 
 // Port of mikro_next `rechunk` (mikro_next/utils.py): aim for ~20 MB chunks given the
 // dtype's byte width. Shape and chunks are in canonical c,t,z,y,x order: c is always 1,
@@ -690,54 +692,82 @@ suspend fun uploadArray(
     return response.dataOrThrow().createArrayDataset
 }
 
-suspend fun uploadActiveImage(services: Services, args: Map<String, JsonElement?>): Map<String, JsonElement?> {
+/**
+ * Upload Image
+ *
+ * Upload the currently active image in the viewer.
+ *
+ * @param name How would you like to name the image?
+ * @return The returned dataset
+ */
+@Action(key = "frage")
+@Returns("dataset")
+suspend fun uploadActiveImage(name: String, @Inject services: Services): DatasetRef {
 
     services.imageDisplayService.imageDisplays.forEach { d -> println(d) }
 
     var active = services.imageDisplayService.getActiveDataset(services.imageDisplayService.imageDisplays[0])
 
-    var name = args.get("name")!!.jsonPrimitive.content
-
     var array = imgPlusToCTZYXUcarArray(active.imgPlus)
 
     var dataset = uploadArray(services, array, name)
 
-    return mapOf(Pair("dataset", structureReturn("@mikro/arraydataset", dataset.id)))
+    return DatasetRef(dataset.id)
 }
 
 
 // Show a mikro Lens: the per-axis selection over a dataset that the server renders as a
 // layer. Only the box the lens selects is read — a lens cropped to four z-planes shows four
 // planes, not the whole stack.
-suspend fun showLens(services: Services, args: Map<String, JsonElement?>): Map<String, JsonElement?> {
+/**
+ * Show Lens
+ *
+ * Show a lens — a per-axis selection over a dataset — in the viewer. Only the region the lens
+ * selects is read.
+ *
+ * @param lens The lens to show
+ * @return The lens that was shown
+ */
+@Action
+@Returns("lens")
+suspend fun showLens(lens: LensRef, @Inject services: Services): LensRef {
 
-    val lensId = structureArgId(args["lens"])
+    val lensId = lens.id
 
     val response = services.mikro.getClient().query(GetLensQuery(id = lensId)).execute()
-    val lens = response.dataOrThrow().lens
 
-    val view = lensViewOf(lens)
+    val view = lensViewOf(response.dataOrThrow().lens)
     val store = services.datalayer.requestAccess(view.storeId)
     val dataset = loadLensView(services, store, view)
 
     services.imageDisplayService.createImageDisplay(dataset)
 
-    return mapOf(Pair("lens", structureReturn("@mikro/lens", lensId)))
+    return lens
 }
 
 // The unsliced sibling of `showLens`: a whole ArrayDataset, read through the same path as a
 // lens that selects everything.
-suspend fun showDataset(services: Services, args: Map<String, JsonElement?>): Map<String, JsonElement?> {
+/**
+ * Show Dataset
+ *
+ * Show a whole array dataset in the viewer.
+ *
+ * @param dataset The dataset to show
+ * @return The dataset that was shown
+ */
+@Action
+@Returns("dataset")
+suspend fun showDataset(dataset: DatasetRef, @Inject services: Services): DatasetRef {
 
-    val datasetId = structureArgId(args["dataset"])
+    val datasetId = dataset.id
 
     val view = fetchDatasetView(services, datasetId)
     val store = services.datalayer.requestAccess(view.storeId)
-    val dataset = loadLensView(services, store, view)
+    val image = loadLensView(services, store, view)
 
-    services.imageDisplayService.createImageDisplay(dataset)
+    services.imageDisplayService.createImageDisplay(image)
 
-    return mapOf(Pair("dataset", structureReturn("@mikro/arraydataset", datasetId)))
+    return dataset
 }
 
 // How often the drawing surface is re-read. Fast enough to feel live to someone drawing, slow
@@ -777,20 +807,34 @@ private fun positionOf(item: DrawnShape, display: ImageDisplay, view: LensView):
 // omit the transform and the edge is UNMAPPABLE — lineage only, no geometry — and every mutation
 // still succeeds, so the failure is invisible from here. Naming the lens rather than the dataset
 // means the lens' own edge back to its dataset carries any crop for free.
-suspend fun annotateLens(services: Services, args: Map<String, JsonElement?>): Map<String, JsonElement?> {
+/**
+ * Annotate Lens
+ *
+ * Open a lens in the viewer and save every ROI drawn on it into a new annotation collection,
+ * as it is drawn. In Fiji, press `t` to bank a selection into the ROI Manager — that is the
+ * signal a shape is finished. Runs until the image window is closed or the task is cancelled;
+ * a dropped connection ends the session (the shapes already saved are kept, but a re-run
+ * starts a second collection).
+ *
+ * @param lens The lens to open and annotate
+ * @return The collection the drawn ROIs were saved into
+ */
+@Action
+@Returns("collection")
+suspend fun annotateLens(lens: LensRef, @Inject services: Services): CollectionRef {
 
-    val lensId = structureArgId(args["lens"])
+    val lensId = lens.id
 
-    val lens = services.mikro.getClient().query(GetLensQuery(id = lensId)).execute().dataOrThrow().lens
-    val view = lensViewOf(lens)
+    val found = services.mikro.getClient().query(GetLensQuery(id = lensId)).execute().dataOrThrow().lens
+    val view = lensViewOf(found)
     val store = services.datalayer.requestAccess(view.storeId)
     val dataset = loadLensView(services, store, view)
 
-    val collectionId = createAnnotationCollection(services, lensId, lens.dataset.name, view)
+    val collectionId = createAnnotationCollection(services, lensId, found.dataset.name, view)
 
     runAnnotationSession(services, view, dataset, collectionId, emptyList(), "annotate_lens")
 
-    return mapOf(Pair("collection", structureReturn("@mikro/annotationcollection", collectionId)))
+    return CollectionRef(collectionId)
 }
 
 // The two-way sibling: open a lens, draw the annotations it already has back into the viewer,
@@ -809,32 +853,52 @@ suspend fun annotateLens(services: Services, args: Map<String, JsonElement?>): M
 // just `files.py`), so "keep the viewer in step with the server" would mean re-querying every
 // poll and diffing — which cannot distinguish a shape deleted remotely from one this session
 // has not pushed yet. Pull once, push continuously.
-suspend fun annotateInFiji(services: Services, args: Map<String, JsonElement?>): Map<String, JsonElement?> {
+/**
+ * Annotate In Fiji
+ *
+ * Open a lens in Fiji and sync its ROIs with an annotation collection in both directions: the
+ * collection's existing shapes are drawn into the viewer on open, and from then on every ROI
+ * drawn or edited is saved back — an edit to a pulled shape updates it rather than duplicating
+ * it. Press `t` to bank a selection into the ROI Manager; that is the signal a shape is
+ * finished. With no collection given, a fresh one is created and there is nothing to pull. The
+ * pull happens once, at open: shapes added on the server afterwards do not appear. Volumetric
+ * shapes (cube, sphere, ellipsoid) cannot be drawn on a 2D surface and are left alone. Runs
+ * until the image window is closed or the task is cancelled.
+ *
+ * @param lens The lens to open and annotate
+ * @param collection The collection to sync with. Its own axes must agree with the lens about
+ *   which axis is x and which is y — its vectors are indexed by them. Leave empty to start a
+ *   new collection.
+ * @return The collection the ROIs were synced with
+ */
+@Action
+@Returns("collection")
+suspend fun annotateInFiji(
+        lens: LensRef,
+        collection: CollectionRef?,
+        @Inject services: Services
+): CollectionRef {
 
-    val lensId = structureArgId(args["lens"])
+    val lensId = lens.id
 
-    val lens = services.mikro.getClient().query(GetLensQuery(id = lensId)).execute().dataOrThrow().lens
-    val view = lensViewOf(lens)
+    val found = services.mikro.getClient().query(GetLensQuery(id = lensId)).execute().dataOrThrow().lens
+    val view = lensViewOf(found)
     val store = services.datalayer.requestAccess(view.storeId)
     val dataset = loadLensView(services, store, view)
 
-    // A nullable STRUCTURE port arrives as JsonNull when the caller leaves it empty, which
-    // `structureArgId` would happily read as the literal string "null".
-    val collectionArg = args["collection"]?.takeIf { it !is JsonNull }
-
     val collectionId: String
     val prefill: List<PrefillShape>
-    if (collectionArg == null) {
-        collectionId = createAnnotationCollection(services, lensId, lens.dataset.name, view)
+    if (collection == null) {
+        collectionId = createAnnotationCollection(services, lensId, found.dataset.name, view)
         prefill = emptyList()
     } else {
-        collectionId = structureArgId(collectionArg)
+        collectionId = collection.id
         prefill = loadPrefill(services, collectionId, view)
     }
 
     runAnnotationSession(services, view, dataset, collectionId, prefill, "annotate_in_fiji")
 
-    return mapOf(Pair("collection", structureReturn("@mikro/annotationcollection", collectionId)))
+    return CollectionRef(collectionId)
 }
 
 // Mint the drawing surface: a collection whose axes ARE the lens' axes, in array order. Two
@@ -1045,12 +1109,27 @@ private suspend fun runAnnotationSession(
 // Download an image, run an arbitrary ImageJ macro over it (image in -> image out), and upload
 // the result as a new @mikro/arraydataset. The macro sees the downloaded image as the IJ1 "current
 // image" and typically transforms it in place (e.g. run("Gaussian Blur...", "sigma=2")).
-suspend fun runImageToImageMacro(services: Services, args: Map<String, JsonElement?>): Map<String, JsonElement?> {
+/**
+ * Run Image-To-Image Macro
+ *
+ * Run an arbitrary ImageJ macro over an image and return the result as a new image.
+ *
+ * @param dataset The dataset to run the macro on
+ * @param macro The ImageJ macro to run. It operates on the image as the current image, e.g.
+ *   run("Gaussian Blur...", "sigma=2").
+ * @param name How would you like to name the resulting image?
+ * @return The resulting dataset after running the macro
+ */
+@Action
+@Returns("dataset")
+suspend fun runImageToImageMacro(
+        dataset: DatasetRef,
+        macro: String,
+        name: String = "Macro result",
+        @Inject services: Services
+): DatasetRef {
 
-    val imageId = structureArgId(args["dataset"])
-    val macro = args["macro"]?.jsonPrimitive?.contentOrNull
-            ?: throw IllegalArgumentException("Missing 'macro' argument")
-    val name = args["name"]?.jsonPrimitive?.contentOrNull ?: "Macro result"
+    val imageId = dataset.id
 
     // 1. Download the input dataset (same access path as showDataset).
     val view = fetchDatasetView(services, imageId)
@@ -1064,5 +1143,5 @@ suspend fun runImageToImageMacro(services: Services, args: Map<String, JsonEleme
     val array = imgPlusToCTZYXUcarArray(outputDataset.imgPlus)
     val result = uploadArray(services, array, name)
 
-    return mapOf(Pair("dataset", structureReturn("@mikro/arraydataset", result.id)))
+    return DatasetRef(result.id)
 }
