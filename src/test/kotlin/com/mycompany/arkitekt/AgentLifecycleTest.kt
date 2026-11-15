@@ -67,9 +67,10 @@ class AgentLifecycleTest {
         )
     }
 
-    private fun init(agent: String = "42", inquiries: List<String> = emptyList()): String {
-        val list = inquiries.joinToString(",") { """{"task":"$it"}""" }
-        return """{"type":"INIT","id":"i1","agent":"$agent","inquiries":[$list]}"""
+    /** The INIT answering [register]: it says the REGISTER's nonce again. */
+    private fun init(register: String?, positions: String = "{}"): String {
+        val nonce = Regex("\"nonce\":\"([^\"]+)\"").find(register ?: "")?.groupValues?.get(1)
+        return """{"type":"INIT","id":"i1","agent":"42","nonce":"$nonce","positions":$positions}"""
     }
 
     // ---- The bug that hangs the agent ----------------------------------------------------
@@ -81,8 +82,7 @@ class AgentLifecycleTest {
         // exactly these two paths — and BOUNCE is a routine soft restart, not an edge case.
         val gw = FakeGateway { index, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
-                sendJson(init())
+                sendJson(init(readUntil { it.contains("REGISTER") }))
                 if (index == 0) {
                     sendJson("""{"type":"BOUNCE","id":"b1","duration":0}""")
                     drain() // stay open: the agent must be the one to close
@@ -104,14 +104,23 @@ class AgentLifecycleTest {
     // ---- Registration and session announcement -------------------------------------------
 
     @Test
-    fun `SESSION_INIT is sent once per process, not once per connection`() = runBlocking {
+    fun `an unacknowledged report is sent again after a reconnect, an acknowledged one is not`() = runBlocking {
         val gw = FakeGateway { index, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
-                sendJson(init())
+                val register = readUntil { it.contains("REGISTER") }
                 if (index == 0) {
+                    sendJson(init(register))
+                    readUntil { it.contains("SESSION_INIT") }
+                    // Never acknowledged: the connection goes first.
                     sendJson("""{"type":"BOUNCE","id":"b1","duration":0}""")
+                } else if (index == 1) {
+                    sendJson(init(register))
+                    val again = readUntil { it.contains("SESSION_INIT") }!!
+                    val session_id = Regex("\"journal_session\":\"([^\"]+)\"").find(again)!!.groupValues[1]
+                    sendJson("""{"type":"JOURNAL_ACK","id":"j1","journal_session":"$session_id","through":1}""")
+                    sendJson("""{"type":"BOUNCE","id":"b2","duration":0}""")
                 } else {
+                    sendJson(init(register))
                     sendJson("""{"type":"KICK","id":"k1"}""")
                 }
                 drain()
@@ -120,18 +129,21 @@ class AgentLifecycleTest {
         val agent = agentAgainst(gw)
         withTimeout(30_000) { agent.provideForever() }
 
-        val types = gw.receivedTypes()
-        assertEquals(2, types.count { it == "REGISTER" }, "one REGISTER per connection")
-        // The session belongs to the process; repeating it on a reconnect would be wrong.
-        assertEquals(1, types.count { it == "SESSION_INIT" })
+        val announcements = gw.received.filter { it.contains("\"SESSION_INIT\"") }
+        // The session belongs to the process: recorded once (position 1), sent until acknowledged.
+        assertEquals(2, announcements.size)
+        assertTrue(announcements.all { it.contains("\"pos\":1,") })
+        // What a REGISTER still owes, it names; the third owes nothing.
+        val registers = gw.received.filter { it.contains("\"REGISTER\"") }
+        assertTrue(registers[1].contains("\"sessions\":[\""))
+        assertTrue(registers[2].contains("\"sessions\":[]"))
     }
 
     @Test
     fun `REGISTER carries the same session id across reconnects`() = runBlocking {
         val gw = FakeGateway { index, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
-                sendJson(init())
+                sendJson(init(readUntil { it.contains("REGISTER") }))
                 sendJson(
                         if (index == 0) """{"type":"BOUNCE","id":"b1","duration":0}"""
                         else """{"type":"KICK","id":"k1"}"""
@@ -151,15 +163,15 @@ class AgentLifecycleTest {
         assertEquals(sessionIds[0], sessionIds[1])
     }
 
-    // ---- Inquiry reconciliation ------------------------------------------------------------
+    // ---- Inquiries ---------------------------------------------------------------------------
 
     @Test
-    fun `every task INIT hands back gets a terminal report`() = runBlocking {
+    fun `an inquiry about a task we never had is answered UNKNOWN`() = runBlocking {
         val gw = FakeGateway { _, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
-                sendJson(init(inquiries = listOf("t-1", "t-2")))
-                readUntil { it.contains("\"t-2\"") }
+                sendJson(init(readUntil { it.contains("REGISTER") }))
+                sendJson("""{"type":"INQUIRE","id":"q1","task":"t-9","request":"r-1"}""")
+                readUntil { it.contains("INQUIRY_ANSWER") }
                 sendJson("""{"type":"KICK","id":"k1"}""")
                 drain()
             }
@@ -167,10 +179,9 @@ class AgentLifecycleTest {
         val agent = agentAgainst(gw)
         withTimeout(30_000) { agent.provideForever() }
 
-        val criticals = gw.received.filter { it.contains("\"CRITICAL\"") }
-        assertEquals(2, criticals.size, "silence would leave both tasks in flight server-side")
-        assertTrue(criticals.any { it.contains("\"t-1\"") })
-        assertTrue(criticals.any { it.contains("\"t-2\"") })
+        val answer = gw.received.single { it.contains("\"INQUIRY_ANSWER\"") }
+        assertTrue(answer.contains("\"status\":\"UNKNOWN\""))
+        assertTrue(answer.contains("\"request\":\"r-1\""))
     }
 
     // ---- Heartbeat ---------------------------------------------------------------------------
@@ -179,8 +190,7 @@ class AgentLifecycleTest {
     fun `a heartbeat is answered`() = runBlocking {
         val gw = FakeGateway { _, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
-                sendJson(init())
+                sendJson(init(readUntil { it.contains("REGISTER") }))
                 sendJson("""{"type":"HEARTBEAT","id":"h1"}""")
                 readUntil { it.contains("HEARTBEAT_ANSWER") }
                 sendJson("""{"type":"KICK","id":"k1"}""")
@@ -209,11 +219,10 @@ class AgentLifecycleTest {
         registry.register_function("echo", testDefinition("echo"), handler)
 
         val assign = """{"type":"ASSIGN","id":"a1","interface":"echo","task":"t-1","args":{},
-            "user":"1","org":"1","action":"a","implementation":"i"}"""
+            "user":"1","org":"1","action":"a","implementation":"i","pos":1}"""
         val gw = FakeGateway { _, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
-                sendJson(init())
+                sendJson(init(readUntil { it.contains("REGISTER") }))
                 sendJson(assign)
                 sendJson(assign) // the redelivery
                 readUntil { it.contains("\"COMPLETED\"") }
@@ -228,6 +237,8 @@ class AgentLifecycleTest {
         val types = gw.receivedTypes()
         assertEquals(1, types.count { it == "STARTED" })
         assertEquals(1, types.count { it == "COMPLETED" })
+        // Both deliveries are acknowledged: the server forgets the command either way.
+        assertEquals(2, gw.received.count { it.contains("\"COMMAND_ACK\"") && it.contains("\"through\":1") })
     }
 
     // ---- Close-code policy, end to end -------------------------------------------------------
@@ -238,8 +249,7 @@ class AgentLifecycleTest {
         // would come back and displace us, forever.
         val gw = FakeGateway { _, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
-                sendJson(init())
+                sendJson(init(readUntil { it.contains("REGISTER") }))
                 close(CloseReason(AgentCloseCodes.AGENT_REPLACED.toShort(), "replaced"))
             }
         }
@@ -256,8 +266,7 @@ class AgentLifecycleTest {
     fun `a heartbeat-timeout close reconnects`() = runBlocking {
         val gw = FakeGateway { index, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
-                sendJson(init())
+                sendJson(init(readUntil { it.contains("REGISTER") }))
                 if (index == 0) {
                     close(CloseReason(AgentCloseCodes.HEARTBEAT_NOT_RESPONDED.toShort(), "slow"))
                 } else {
@@ -280,11 +289,11 @@ class AgentLifecycleTest {
         // peer. (The real wait is 35s; shortened here so the path can actually be exercised.)
         val gw = FakeGateway { index, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
+                val register = readUntil { it.contains("REGISTER") }
                 if (index == 0) {
                     close(CloseReason(AgentCloseCodes.AGENT_ALREADY_CONNECTED.toShort(), "busy"))
                 } else {
-                    sendJson(init())
+                    sendJson(init(register))
                     sendJson("""{"type":"KICK","id":"k1"}""")
                     drain()
                 }
@@ -324,19 +333,19 @@ class AgentLifecycleTest {
         // agent displaced hours later must still be willing to wait rather than giving up at once.
         val gw = FakeGateway { index, session ->
             with(session) {
-                readUntil { it.contains("REGISTER") }
+                val register = readUntil { it.contains("REGISTER") }
                 when (index) {
                     // Busy, wait, retry...
                     0 -> close(CloseReason(AgentCloseCodes.AGENT_ALREADY_CONNECTED.toShort(), "busy"))
                     // ...we get in, and this connection counts as a recovery...
                     1 -> {
-                        sendJson(init())
+                        sendJson(init(register))
                         close(CloseReason(AgentCloseCodes.HEARTBEAT_NOT_RESPONDED.toShort(), "slow"))
                     }
                     // ...so a later 4004 is waited out again rather than being fatal.
                     2 -> close(CloseReason(AgentCloseCodes.AGENT_ALREADY_CONNECTED.toShort(), "busy"))
                     else -> {
-                        sendJson(init())
+                        sendJson(init(register))
                         sendJson("""{"type":"KICK","id":"k1"}""")
                         drain()
                     }

@@ -14,7 +14,11 @@ import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 // A registry mapping an interface name -> (implementation function, its DefinitionInput).
 // Each function takes (App, args) and returns the yielded values.
@@ -86,9 +90,74 @@ public class Agent(
         println("implementAgent -> ${response.data}")
     }
 
-    // SESSION_INIT announces the *process*, not the socket, so it is sent once and never
-    // repeated on a reconnect.
+    // What belongs to the process, not to one socket: a task keeps running while the connection
+    // is away, and what it reports waits in the journal for the next one.
+
+    /** Everything we report, numbered and kept until acknowledged. Its session is the process's. */
+    private val journal = Journal()
+
+    /** The highest command position handled: a position at or below it is not handled again. */
+    @Volatile private var commandsSeen = 0L
+
+    /** Running tasks by id, so CANCEL/INTERRUPT can stop them. */
+    private val running = ConcurrentHashMap<String, Job>()
+
+    /** Where tasks run: outside any one connection. */
+    private val tasks = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** The live connection's direct line, for a probe's reports (never numbered, never kept). */
+    @Volatile private var direct: (suspend (AgentEvent) -> Unit)? = null
+
     private var sessionAnnounced = false
+
+    /** A probe is ephemeral: its task id is `p-…` and its reports are sent at most once. */
+    private fun isProbe(task: String) = task.startsWith("p-")
+
+    /** Report on a task: numbered and kept, or for a probe sent now if there is a connection. */
+    private suspend fun report(event: AgentEvent) {
+        val task = event.reportedTask
+        if (task != null && isProbe(task)) {
+            runCatching { direct?.invoke(event) }
+        } else {
+            journal.record(event)
+        }
+    }
+
+    /** Run an assigned task. It outlives the connection it came on. */
+    private fun run(msg: AgentMessage.Assign) {
+        if (running.containsKey(msg.task)) {
+            println("Ignoring duplicate ASSIGN for task ${msg.task}")
+            return
+        }
+        // A task runs once: not again while it runs, and not again after it ended.
+        if (!isProbe(msg.task) && !journal.begin(msg.task)) {
+            println("Ignoring duplicate ASSIGN for task ${msg.task}")
+            return
+        }
+        val func = registry.get_function(msg.functionName)
+        val job =
+                tasks.launch(start = CoroutineStart.LAZY) {
+                    try {
+                        if (func == null) {
+                            println("No implementation for interface '${msg.functionName}'")
+                            report(AgentEvent.Critical(msg.task, "No implementation for '${msg.functionName}'"))
+                            return@launch
+                        }
+                        report(AgentEvent.Started(msg.task))
+                        val returns = func(app, msg.args)
+                        report(AgentEvent.Yield(msg.task, returns))
+                        report(AgentEvent.Completed(msg.task))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        report(AgentEvent.Critical(msg.task, e.message ?: e.toString()))
+                    } finally {
+                        running.remove(msg.task)
+                    }
+                }
+        running[msg.task] = job
+        job.start()
+    }
 
     /** What one connection attempt ended up telling us. */
     private data class Attempt(
@@ -131,11 +200,24 @@ public class Agent(
      * connection — means "do not", because reconnecting would displace the incumbent right back
      * and turn two instances into a mutual-eviction loop.
      */
-    suspend fun provideForever(): Result<String> {
-        // Minted ONCE, outside the loop. The backend reads session_id as "is this the same
-        // process?": presenting the same one lets a reconnect reclaim its in-flight tasks, while a
-        // fresh one tells the backend the process died and makes it fail-and-cascade that work.
-        val sessionId = java.util.UUID.randomUUID().toString()
+    suspend fun provideForever(): Result<String> =
+            try {
+                stayConnected()
+            } finally {
+                // The agent is gone for good: so are its tasks.
+                tasks.coroutineContext.cancelChildren()
+            }
+
+    private suspend fun stayConnected(): Result<String> {
+        // The journal's session, the same for every connection of this process. The backend reads
+        // session_id as "is this the same process?": the same one lets a reconnect keep its
+        // in-flight tasks, while a fresh one tells the backend the process died.
+        val sessionId = journal.session
+        // The journal's first report (position 1), once per process.
+        if (!sessionAnnounced) {
+            sessionAnnounced = true
+            journal.record(AgentEvent.SessionInit(sessionId = sessionId))
+        }
 
         var retry = 0
         var waitedOutIncumbent = false
@@ -204,10 +286,6 @@ public class Agent(
     /** One connection attempt, from opening the socket to it closing. */
     private suspend fun connectOnce(sessionId: String): Attempt {
         return coroutineScope {
-            val outbound = Channel<AgentEvent>(capacity = 100)
-            // Running tasks keyed by task id, so CANCEL/INTERRUPT can stop them, and so a
-            // redelivered ASSIGN for a task already running can be recognised and dropped.
-            val runningJobs = ConcurrentHashMap<String, Job>()
             // KICK means "do not come back"; a bounce or a plain close means reconnect.
             var kicked = false
             // INIT is the server's acceptance of our REGISTER, and the only proof this
@@ -230,19 +308,124 @@ public class Agent(
                     session.send(Frame.Text(agentJson.encodeToString(AgentEvent.serializer(), event)))
                 }
 
-                // Sender: REGISTER first, then drain queued events. The token is pulled at
-                // connect time so a reconnect after an expiry carries the refreshed one.
+                // New per attempt: an INIT that does not say it again is not ours.
+                val nonce = newId()
+                // Where the server stands in our journal, once INIT said so.
+                val standing = CompletableDeferred<Long>()
+                // Something was recorded, or the server asked for a position again.
+                val wake = Channel<Unit>(Channel.CONFLATED)
+                // JOURNAL_NACK: go back to just before this position (-1: nothing asked).
+                val rewind = AtomicLong(-1)
+
+                // Sender: REGISTER first; after INIT the journal, in order, from where the server
+                // stands. The token is pulled at connect time so a reconnect after an expiry
+                // carries the refreshed one.
                 val senderJob = launch {
                     send(
                             AgentEvent.Register(
                                     token = tokens.accessToken(),
                                     force = false,
-                                    sessionId = sessionId
+                                    sessionId = sessionId,
+                                    nonce = nonce,
+                                    commandsSeen = commandsSeen,
+                                    sessions = if (journal.owes) listOf(journal.session) else emptyList()
                             )
                     )
-                    for (event in outbound) {
-                        send(event)
+                    var sent = standing.await()
+                    while (true) {
+                        val back = rewind.getAndSet(-1)
+                        if (back >= 0 && back < sent) sent = back
+                        val owed = journal.owedAfter(sent)
+                        if (owed.isEmpty()) {
+                            wake.receive()
+                            continue
+                        }
+                        for ((pos, frame) in owed) {
+                            session.send(Frame.Text(frame))
+                            sent = pos
+                        }
                     }
+                }
+                journal.onRecord = { wake.trySend(Unit) }
+                direct = { send(it) }
+
+                /** Handle one frame we could read. False when the connection is to end. */
+                suspend fun handle(msg: AgentMessage): Boolean {
+                    when (msg) {
+                        // Answered on the session directly: the server pings every 10s and closes
+                        // the socket if the answer takes more than 5s, so liveness must not queue
+                        // behind a large YIELD.
+                        is AgentMessage.Heartbeat -> send(AgentEvent.HeartbeatAnswer())
+
+                        is AgentMessage.Init -> {
+                            if (msg.nonce != nonce) {
+                                println("Ignoring an INIT that names another connection")
+                                return true
+                            }
+                            registered = true
+                            println("Agent registered as ${msg.agent}")
+                            // The server says how far it took our session: forget that much and
+                            // send the rest. A session it does not name is one we owe nothing of
+                            // (or one it has never seen, and then everything is still here).
+                            val through = msg.positions[journal.session]
+                            if (through != null) journal.ack(through)
+                            standing.complete(through ?: journal.ackedThrough)
+                        }
+                        is AgentMessage.JournalAck ->
+                                if (msg.journalSession == journal.session) journal.ack(msg.through)
+                        is AgentMessage.JournalNack ->
+                                if (msg.journalSession == journal.session) {
+                                    // What we no longer hold is said to be gone; the rest follows.
+                                    journal.missing(msg.expected)?.let {
+                                        println("Reports ${it.first}..${it.last} are lost")
+                                        send(AgentEvent.JournalSkip(journal.session, it.first, it.last))
+                                    }
+                                    rewind.set(msg.expected - 1)
+                                    wake.trySend(Unit)
+                                }
+                        // Answered at once, from memory. UNKNOWN ends the task LOST, so a task
+                        // whose end we reported says ENDED: that report may still be on its way.
+                        is AgentMessage.Inquire ->
+                                send(
+                                        AgentEvent.InquiryAnswer(
+                                                task = msg.task,
+                                                status = if (running.containsKey(msg.task)) TaskStatus.RUNNING
+                                                else journal.status(msg.task),
+                                                request = msg.request
+                                        )
+                                )
+                        is AgentMessage.Assign -> run(msg)
+                        is AgentMessage.Cancel -> {
+                            running.remove(msg.task)?.cancel()
+                            report(AgentEvent.Cancelled(msg.task))
+                        }
+                        is AgentMessage.Interrupt -> {
+                            running.remove(msg.task)?.cancel()
+                            report(AgentEvent.Interrupted(msg.task))
+                        }
+                        // Plain functions can't truly suspend mid-run; acknowledge to stay
+                        // protocol-compliant.
+                        is AgentMessage.Pause -> report(AgentEvent.Paused(msg.task))
+                        is AgentMessage.Resume -> report(AgentEvent.Resumed(msg.task))
+                        is AgentMessage.Kick -> {
+                            println("Kicked by server: ${msg.reason}")
+                            kicked = true
+                            return false
+                        }
+                        is AgentMessage.Bounce -> {
+                            println("Server requested reconnect (bounce)")
+                            bounceDelaySeconds = msg.duration
+                            return false
+                        }
+                        // We sent something the backend could not process. Keep it as this
+                        // connection's failure reason: a close usually follows, and this text
+                        // is the only human-readable detail behind an otherwise opaque code.
+                        is AgentMessage.ProtocolError -> {
+                            detail = msg.error
+                            println("Protocol error: ${msg.error}")
+                        }
+                    }
+                    return true
                 }
 
                 // Receiver: dispatch inbound messages.
@@ -250,111 +433,30 @@ public class Agent(
                     for (frame in session.incoming) {
                         val text = (frame as? Frame.Text)?.readText() ?: continue
 
-                        val msg =
+                        // A command carries its position, whatever its type: read off the raw
+                        // frame, so one we cannot decode is still acknowledged (and not sent
+                        // again on every reconnect).
+                        val pos =
                                 runCatching {
-                                            agentJson.decodeFromString(AgentMessage.serializer(), text)
+                                            agentJson.parseToJsonElement(text).jsonObject["pos"]?.jsonPrimitive?.longOrNull
                                         }
+                                        .getOrNull()
+                        // Handled before (it was sent again because our ack never arrived).
+                        if (pos != null && pos <= commandsSeen) {
+                            send(AgentEvent.CommandAck(commandsSeen))
+                            continue
+                        }
+
+                        val msg =
+                                runCatching { agentJson.decodeFromString(AgentMessage.serializer(), text) }
                                         .getOrElse {
                                             println("Ignoring undecodable message: $it -- $text")
                                             null
                                         }
-                                        ?: continue
-
-                        when (msg) {
-                            // Answered on the session directly, never through `outbound`: the
-                            // server pings every 10s and closes the socket if the answer takes
-                            // more than 5s, so liveness must not queue behind a large YIELD (or
-                            // behind a full channel, which would block this very loop).
-                            is AgentMessage.Heartbeat -> send(AgentEvent.HeartbeatAnswer())
-
-                            is AgentMessage.Init -> {
-                                registered = true
-                                println(
-                                        "Agent registered as ${msg.agent}; pending inquiries=${msg.inquiries.size}"
-                                )
-
-                                // Announce the run once per process. The backend opens a Session
-                                // row from this; it belongs to the process, not the socket, so a
-                                // reconnect does not repeat it.
-                                if (!sessionAnnounced) {
-                                    sessionAnnounced = true
-                                    send(AgentEvent.SessionInit(sessionId = sessionId))
-                                }
-
-                                reportsForInquiries(msg.inquiries).forEach { send(it) }
-                            }
-                            is AgentMessage.Assign -> {
-                                // Assign delivery is at-least-once, so the same task can arrive
-                                // twice. Running it twice would repeat the side effect (an upload,
-                                // say) — the server only dedups the resulting *report*.
-                                if (runningJobs.containsKey(msg.task)) {
-                                    println("Ignoring duplicate ASSIGN for task ${msg.task}")
-                                    continue
-                                }
-                                val func = registry.get_function(msg.functionName)
-                                if (func == null) {
-                                    println("No implementation for interface '${msg.functionName}'")
-                                    outbound.send(
-                                            AgentEvent.Critical(
-                                                    msg.task,
-                                                    "No implementation for '${msg.functionName}'"
-                                            )
-                                    )
-                                    continue
-                                }
-                                val job =
-                                        launch(Dispatchers.IO) {
-                                            try {
-                                                outbound.send(AgentEvent.Started(msg.task))
-                                                val returns = func(app, msg.args)
-                                                outbound.send(AgentEvent.Yield(msg.task, returns))
-                                                outbound.send(AgentEvent.Completed(msg.task))
-                                            } catch (e: CancellationException) {
-                                                throw e
-                                            } catch (e: Exception) {
-                                                outbound.send(
-                                                        AgentEvent.Critical(
-                                                                msg.task,
-                                                                e.message ?: e.toString()
-                                                        )
-                                                )
-                                            } finally {
-                                                runningJobs.remove(msg.task)
-                                            }
-                                        }
-                                runningJobs[msg.task] = job
-                            }
-                            is AgentMessage.Cancel -> {
-                                runningJobs.remove(msg.task)?.cancel()
-                                outbound.send(AgentEvent.Cancelled(msg.task))
-                            }
-                            is AgentMessage.Interrupt -> {
-                                runningJobs.remove(msg.task)?.cancel()
-                                outbound.send(AgentEvent.Interrupted(msg.task))
-                            }
-                            // Plain functions can't truly suspend mid-run; acknowledge to stay
-                            // protocol-compliant.
-                            is AgentMessage.Pause -> outbound.send(AgentEvent.Paused(msg.task))
-                            is AgentMessage.Resume -> outbound.send(AgentEvent.Resumed(msg.task))
-                            // We persist nothing, so the durability ack is informational only.
-                            is AgentMessage.EventAck -> {}
-                            is AgentMessage.Kick -> {
-                                println("Kicked by server: ${msg.reason}")
-                                kicked = true
-                                break
-                            }
-                            is AgentMessage.Bounce -> {
-                                println("Server requested reconnect (bounce)")
-                                bounceDelaySeconds = msg.duration
-                                break
-                            }
-                            // We sent something the backend could not process. Keep it as this
-                            // connection's failure reason: a close usually follows, and this text
-                            // is the only human-readable detail behind an otherwise opaque code.
-                            is AgentMessage.ProtocolError -> {
-                                detail = msg.error
-                                println("Protocol error: ${msg.error}")
-                            }
+                        if (msg != null && !handle(msg)) break
+                        if (pos != null) {
+                            commandsSeen = pos
+                            send(AgentEvent.CommandAck(pos))
                         }
                     }
                 }
@@ -365,8 +467,10 @@ public class Agent(
                 } catch (e: Exception) {
                     println("Closed with exception $e")
                 } finally {
-                    runningJobs.values.forEach { it.cancel() }
-                    outbound.close()
+                    // The tasks go on: what they report waits in the journal for the next
+                    // connection. Only this connection's lines are taken down.
+                    journal.onRecord = null
+                    direct = null
                     // Close FIRST, then read the reason. `closeReason` only completes once the
                     // session is closed, and on the paths where *we* leave — KICK and BOUNCE both
                     // arrive as messages that the server does not follow with a close — awaiting
@@ -397,22 +501,3 @@ public class Agent(
         }
     }
 }
-
-/**
- * What to report for the tasks INIT hands back as still open.
- *
- * The server sends these to a reconnect that presented the same `session_id`, expecting us to
- * either carry on running them or say how they ended — there is no reply message type, so silence
- * leaves them in-flight until a server-side sweep resolves them.
- *
- * Every one of our jobs is cancelled when a connection drops, so by the time INIT arrives they are
- * all genuinely dead and the honest answer is always CRITICAL. (rekuest-next can answer PROGRESS
- * here instead, because its actors outlive the socket; ours do not.)
- */
-fun reportsForInquiries(inquiries: List<AssignInquiry>): List<AgentEvent.Critical> =
-        inquiries.map {
-            AgentEvent.Critical(
-                    it.task,
-                    "The agent reconnected; this task did not survive the disconnect."
-            )
-        }

@@ -38,7 +38,7 @@ JDK 11 and 17 are the only full JDKs installed; the build is pinned to 17. `./gr
 print a benign `Cannot create plugin: ...JavaScriptScriptLanguage` line and then keep running
 (window stays up). On a different machine, point `org.gradle.java.home` at any full JDK ≤ 17.
 
-Tests (`./gradlew test`, JUnit 5, 104 of them) cover the fakts token-rotation rule, expiry math and
+Tests (`./gradlew test`, JUnit 5, 102 of them) cover the fakts token-rotation rule, expiry math and
 flat-grant split (`FaktsTest.kt`, `TokenManagerTest.kt`); the agent wire format and close-code
 policy (`AgentProtocolTest.kt`, `CloseCodeTest.kt`); the lens read path — render-axis derivation,
 slice resolution, the permutation and the stride (`LensViewTest.kt`, which needs no network); the
@@ -483,28 +483,39 @@ server-side from one this session has not pushed yet.
   advertises all implementations in one `implementAgent(ImplementAgentInput{implementations})` call
   (the rekuest-next agent API — there is no `instanceId`/`setExtensionImplementations` anymore).
 - `Agent.provideForever()` is a **reconnect loop** around `connectOnce()`, which opens a Ktor
-  **WebSocket** to `…/agi` and sends `REGISTER{token, force, session_id}` as its first frame (the
-  token rides *in* the frame, never in the URL, and is pulled fresh per attempt). The per-process
-  `sessionId` is minted **once, outside the loop** — this is load-bearing, not cosmetic: the
-  backend reads `session_id` as "is this the same process?", so presenting the same one lets a
-  reconnect reclaim its in-flight tasks, while a fresh one makes the server fail-and-cascade them.
-  The connection then loops (tasks are tracked in a `ConcurrentHashMap<task, Job>`):
-  - `INIT` — the server's acknowledgement, and the only proof the connection was accepted. On the
-    first one we send `SESSION_INIT{session_id, states:{}}`, which opens the server's `Session`
-    row; it announces the *process*, so it is never repeated on a reconnect. We then answer
-    `INIT.inquiries` — the tasks the server still has open for us — with a `CRITICAL` each
-    (`reportsForInquiries`). There is no inquiry-reply message type; silence would leave those
-    tasks in flight until a server-side sweep. Every job is cancelled when a connection drops, so
-    "it died" is always the honest answer here.
-  - `HEARTBEAT` → `HEARTBEAT_ANSWER`, sent **on the session directly, never through the outbound
-    channel**. The server pings every 10s and closes 3001 if the answer takes >5s, and that answer
-    also renews our write-lease — so liveness must not queue behind a large `YIELD` (or behind a
-    full channel, which would block the receive loop itself).
-  - `ASSIGN` → look up the handler by `interface` name, run it on `Dispatchers.IO`, emit `STARTED`
-    → `YIELD` (the return map) → `COMPLETED`, or `CRITICAL` on exception. **A repeat of a `task`
-    already running is dropped**: delivery is at-least-once (the backend queue does
-    pop → send → ack), and the server dedups the resulting *report* but not the side effect.
-  - `CANCEL`/`INTERRUPT` → cancel the running job, emit `CANCELLED`/`INTERRUPTED`; `PAUSE`/`RESUME`
+  **WebSocket** to `…/agi` and sends `REGISTER{token, force, session_id, nonce, commands_seen,
+  sessions, features:["protocol_2"], spec_version}` as its first frame (the token rides *in* the
+  frame, never in the URL, and is pulled fresh per attempt). This is **agent protocol 2** (the
+  contract is the server's `takt/docs/journal.md`): both directions are numbered and acknowledged,
+  and the server refuses an agent without the `protocol_2` feature or a `spec_version`.
+  What belongs to the **process** lives on the `Agent`, not on the connection: the `Journal`
+  (its `session` is the `session_id`, the same for every reconnect), `commandsSeen`, and the
+  running tasks (`ConcurrentHashMap<task, Job>` in a scope of their own). **A task keeps running
+  while the socket is away**; what it reports waits in the journal for the next connection.
+  - **Reports are numbered and kept** (`Journal.kt`): every report gets `pos` (per session, no
+    gaps), `journal_session`, `agent_ts` and, for a task that ran here, `task_step`, stamped onto
+    the frame's JSON. It stays until a `JOURNAL_ACK{journal_session, through}` covers it. After
+    `INIT` the sender coroutine sends what is owed, in order, from where the server stands
+    (`INIT.positions`); a `JOURNAL_NACK{expected}` rewinds it, and a position no longer held is
+    named with `JOURNAL_SKIP`. The journal is also each task's gate: nothing is recorded after a
+    terminal report, and a task id runs once. It is in memory only: ImageJ closing loses what was
+    not acknowledged, and the server ends those tasks `LOST`.
+  - **Commands are handled once**: every frame the server must not lose carries `pos` (per agent).
+    It is read off the raw JSON, so a type we cannot decode is acknowledged too. A position at or
+    below `commandsSeen` is skipped; either way we answer `COMMAND_ACK{through}`.
+  - `INIT` — the server's acknowledgement, and the only proof the connection was accepted. It says
+    the REGISTER's `nonce` again; one that does not is ignored. `SESSION_INIT{session_id,
+    states:{}}` is the journal's first report (position 1), recorded once per process.
+  - `INQUIRE{task, request}` → `INQUIRY_ANSWER{task, status, request}`, at once and unnumbered:
+    `RUNNING`, `ENDED` (we reported its end; that report may still be on its way) or `UNKNOWN`.
+    **`UNKNOWN` ends the task `LOST`**, which is why an ended task is remembered.
+  - `HEARTBEAT` → `HEARTBEAT_ANSWER`, sent **on the session directly**. The server pings every 10s
+    and closes 3001 if the answer takes >5s, and that answer also renews our write-lease — so
+    liveness must not queue behind a large `YIELD`.
+  - `ASSIGN` → look up the handler by `interface` name, run it on `Dispatchers.IO`, report
+    `STARTED` → `YIELD` (the return map) → `COMPLETED`, or `CRITICAL` on exception. A probe
+    (task id `p-…`) is ephemeral: its reports are sent directly, never numbered or kept.
+  - `CANCEL`/`INTERRUPT` → cancel the running job, report `CANCELLED`/`INTERRUPTED`; `PAUSE`/`RESUME`
     → ack-only `PAUSED`/`RESUMED`; `KICK` → stop for good; `BOUNCE` → reconnect (honouring its
     `duration` hint); `PROTOCOL_ERROR` → kept as the connection's failure reason.
 - **What we do on a close is decided by the server's close code**, not by guesswork
@@ -528,14 +539,9 @@ server-side from one this session has not pushed yet.
   `Frame.Text` explicitly (no Ktor content-converter). **The handler return map is serialized
   straight back as the YIELD payload**, so handler return keys must match the registered `returns`
   keys.
-  Two traps encoded there: `REGISTER` is the **only** message the server declares `extra="forbid"`
-  on, so a stray field closes the socket instead of being ignored (this is how the retired `mode`
-  field broke the agent) — hence `AgentProtocolTest` asserts its *exact* key set. And
-  `APP_CANCELLED` appears in the server's enum but has no message class and is not in the union:
-  sending it is a protocol error, so app-side cancellation is reported as `CANCELLED`.
-  `seq`/`EVENT_ACK` (the at-least-once report contract) are deliberately not implemented — the
-  backend dedups terminal reports by task id anyway, and answering `INIT.inquiries` achieves what
-  rekuest-next's unacked-report replay is for.
+  One trap encoded there: `APP_CANCELLED` appears in the server's enum but has no message class
+  and is not in the union: sending it is a protocol error, so app-side cancellation is reported
+  as `CANCELLED`. There is no `seq`, `EVENT_ACK` or `INIT.inquiries` any more.
 
 ### Adding a new remote action
 1. Write a `suspend (App, Map<String, JsonElement?>) -> Map<String, JsonElement?>` handler

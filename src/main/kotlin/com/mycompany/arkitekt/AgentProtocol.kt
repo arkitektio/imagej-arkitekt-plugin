@@ -12,15 +12,15 @@ import java.util.UUID
 // (a uuid4). We rely on kotlinx's class discriminator (`type`) rather than declaring a `type`
 // property on each subclass, so the discriminator is written/read automatically.
 //
-// Each task is keyed by `task` (a UUID string). The agent's report events
-// (STARTED -> YIELD -> COMPLETED, with FAILED/CRITICAL on error) extend the ack-able stream:
-// they may carry a `seq`, and the backend acks them with EVENT_ACK.
+// Each task is keyed by `task` (a UUID string). This is agent protocol 2 (the contract is the
+// server's `takt/docs/journal.md`): both directions are numbered and acknowledged.
 //
-// DELIBERATE: we implement neither `seq` nor retain-and-resend. `seq` is optional and the backend
-// dedups terminal reports by task id regardless of it, and the reason rekuest-next replays unacked
-// terminals on INIT — reconciling tasks the server still thinks are running — we achieve instead by
-// answering INIT's `inquiries` directly (see Agent.kt). So EVENT_ACK is a no-op by choice, not by
-// omission.
+// - What we report (SESSION_INIT, STARTED, YIELD, COMPLETED, …) is numbered by the [Journal]
+//   (`pos`, `journal_session`, `agent_ts`, `task_step`, stamped onto the frame there) and kept
+//   until a JOURNAL_ACK covers it.
+// - What the server must not lose (ASSIGN, CANCEL, …) carries its own `pos`: we handle a position
+//   once and answer COMMAND_ACK. `pos` is read off the raw frame (Agent.kt), so the classes below
+//   do not declare it and a command of a type we do not know is still acknowledged.
 //
 // TRAP: `FromAgentMessageType` on the server also lists APP_CANCELLED, but it has no message class
 // and is absent from the union — sending it fails discrimination and closes the socket. Report
@@ -36,13 +36,11 @@ val agentJson: Json = Json {
     encodeDefaults = true
 }
 
-/**
- * One still-open task the server is handing back on reconnect (nested inside INIT).
- *
- * Deliberately NOT an [AgentMessage]: on the wire it is a bare object with only `task` — no
- * `type`, no `id` — so it must not go through the polymorphic discriminator.
- */
-@Serializable data class AssignInquiry(val task: String)
+/** The spec release this agent was written against. The server refuses a REGISTER without one. */
+const val AGENT_SPEC_VERSION = "10.1.0"
+
+/** The feature that says "I speak protocol 2". The server refuses an agent that does not. */
+const val FEATURE_PROTOCOL_2 = "protocol_2"
 
 // ---- Inbound: rekuest backend -> agent --------------------------------------------------
 
@@ -52,21 +50,22 @@ sealed class AgentMessage {
     /**
      * The server's acknowledgement of our REGISTER — the only proof this connection worked.
      *
-     * `inquiries` is one entry per task the server still has open for us, handed back to a
-     * reconnect that presented the same `session_id`. There is no inquiry-reply message type:
-     * the contract is that we either keep running the task or report a terminal event for it.
+     * `nonce` says again the one our REGISTER carried: an INIT naming another connection (one
+     * gone since) is ignored. `positions` is how far the server has taken each journal session
+     * our REGISTER listed: we drop what is at or below and send the rest.
      */
     @Serializable
     @SerialName("INIT")
     data class Init(
             val agent: String,
-            val inquiries: List<AssignInquiry> = emptyList(),
+            val nonce: String? = null,
+            val positions: Map<String, Long> = emptyMap(),
             val id: String = newId()
     ) : AgentMessage()
 
     /**
-     * Start a task. Delivery is **at-least-once** (the backend queue does pop -> send -> ack), so
-     * the same `task` can arrive twice and the handler must only run once.
+     * Start a task. It is sent again until our COMMAND_ACK covers its position, so the same
+     * `task` can arrive twice and the handler must only run once.
      */
     @Serializable
     @SerialName("ASSIGN")
@@ -113,10 +112,28 @@ sealed class AgentMessage {
 
     @Serializable @SerialName("HEARTBEAT") data class Heartbeat(val id: String = newId()) : AgentMessage()
 
-    /** Backend ack that a reported event was made durable. We do not retain/resend, so it's a no-op. */
+    /** The server has taken every report of `journal_session` through `through` (cumulative). */
     @Serializable
-    @SerialName("EVENT_ACK")
-    data class EventAck(val event: String, val task: String? = null, val seq: Int? = null, val id: String = newId()) :
+    @SerialName("JOURNAL_ACK")
+    data class JournalAck(
+            @SerialName("journal_session") val journalSession: String,
+            val through: Long,
+            val id: String = newId()
+    ) : AgentMessage()
+
+    /** A gap: the server did not take what we sent and wants `expected` next, then on in order. */
+    @Serializable
+    @SerialName("JOURNAL_NACK")
+    data class JournalNack(
+            @SerialName("journal_session") val journalSession: String,
+            val expected: Long,
+            val id: String = newId()
+    ) : AgentMessage()
+
+    /** "What became of this task?" Answered at once, from memory, with INQUIRY_ANSWER. */
+    @Serializable
+    @SerialName("INQUIRE")
+    data class Inquire(val task: String, val request: String? = null, val id: String = newId()) :
             AgentMessage()
 
     @Serializable
@@ -138,28 +155,56 @@ sealed class AgentMessage {
 @Serializable
 sealed class AgentEvent {
 
-    /** First message after connect. `force` kicks any existing connection for this agent.
-     *  `mode` is the requested participation mode (we are an EXECUTOR); `sessionId` is a
-     *  per-process uuid — a fresh value signals a fresh process to the backend's reclaim logic. */
+    /**
+     * First message after connect. `force` kicks any existing connection for this agent.
+     * `sessionId` is a per-process uuid (the [Journal]'s session): the same one on a reconnect
+     * says the process survived. `nonce` is new per connection attempt and comes back in INIT.
+     * `commandsSeen` is the highest command position this process handled (the server sends from
+     * the one after), and `sessions` the journal sessions we still hold unacknowledged reports of.
+     */
     @Serializable
     @SerialName("REGISTER")
     data class Register(
             val token: String,
             val force: Boolean = false,
             @SerialName("session_id") val sessionId: String? = null,
+            val nonce: String = newId(),
+            @SerialName("commands_seen") val commandsSeen: Long = 0,
+            val sessions: List<String> = emptyList(),
+            val features: List<String> = listOf(FEATURE_PROTOCOL_2),
+            @SerialName("spec_version") val specVersion: String = AGENT_SPEC_VERSION,
             val id: String = newId()
     ) : AgentEvent()
-    // NOTE: no `mode`. The server dropped the field (rekuest, 2026-08-13) and made REGISTER the
-    // one message with `extra="forbid"` on purpose: a client still sending the old
-    // `mode: "OBSERVER"` must be told to update, not be silently promoted to a full agent and
-    // displace the real executor. Sending it is a hard protocol error, not a warning.
+    // NOTE: no `mode`. The server dropped the field (rekuest, 2026-08-13); everyone on /agi is an
+    // agent. And no declaration: the implementations are registered over GraphQL (Agent.kt).
+
+    /** We handled every command through `through` (cumulative): the server may forget them. */
+    @Serializable
+    @SerialName("COMMAND_ACK")
+    data class CommandAck(val through: Long, val id: String = newId()) : AgentEvent()
+
+    /** The reports `first..last` of `session` are gone here: the server goes on after `last`. */
+    @Serializable
+    @SerialName("JOURNAL_SKIP")
+    data class JournalSkip(val session: String, val first: Long, val last: Long, val id: String = newId()) :
+            AgentEvent()
+
+    /** The answer to INQUIRE: a [TaskStatus], with the `request` the inquiry named. */
+    @Serializable
+    @SerialName("INQUIRY_ANSWER")
+    data class InquiryAnswer(
+            val task: String,
+            val status: String,
+            val request: String? = null,
+            val id: String = newId()
+    ) : AgentEvent()
 
     /**
      * Announces this run to the backend, which opens a `Session` row from it.
      *
-     * Sent once per process, after the first INIT — the server only dispatches non-REGISTER
-     * frames once the session exists, so sending it before acknowledgement risks a close. It is
-     * deliberately not re-sent on reconnect: the session belongs to the process, not the socket.
+     * Recorded once per process, as the journal's first report (position 1): the session belongs
+     * to the process, not the socket. Like any report it goes out after INIT and is sent again
+     * until acknowledged.
      *
      * `states` is the initial state snapshots by name. We register no states, so it is always
      * empty — but the field is required, so it must still be written.
@@ -184,32 +229,31 @@ sealed class AgentEvent {
      */
     @Serializable
     @SerialName("STARTED")
-    data class Started(val task: String, val seq: Int? = null, val id: String = newId()) : AgentEvent()
+    data class Started(val task: String, val id: String = newId()) : AgentEvent()
 
     @Serializable
     @SerialName("YIELD")
     data class Yield(
             val task: String,
             val returns: Map<String, JsonElement?>? = null,
-            val seq: Int? = null,
             val id: String = newId()
     ) : AgentEvent()
 
     /** The task finished successfully (terminal). */
     @Serializable
     @SerialName("COMPLETED")
-    data class Completed(val task: String, val seq: Int? = null, val id: String = newId()) : AgentEvent()
+    data class Completed(val task: String, val id: String = newId()) : AgentEvent()
 
     /** Recoverable error for a task. */
     @Serializable
     @SerialName("FAILED")
-    data class Failed(val task: String, val error: String, val seq: Int? = null, val id: String = newId()) :
+    data class Failed(val task: String, val error: String, val id: String = newId()) :
             AgentEvent()
 
     /** Unrecoverable error for a task. */
     @Serializable
     @SerialName("CRITICAL")
-    data class Critical(val task: String, val error: String, val seq: Int? = null, val id: String = newId()) :
+    data class Critical(val task: String, val error: String, val id: String = newId()) :
             AgentEvent()
 
     @Serializable
@@ -218,7 +262,6 @@ sealed class AgentEvent {
             val task: String,
             val progress: Int? = null,
             val message: String? = null,
-            val seq: Int? = null,
             val id: String = newId()
     ) : AgentEvent()
 
@@ -228,26 +271,47 @@ sealed class AgentEvent {
             val task: String,
             val message: String,
             val level: String = "INFO",
-            val seq: Int? = null,
             val id: String = newId()
     ) : AgentEvent()
 
     @Serializable
     @SerialName("CANCELLED")
-    data class Cancelled(val task: String, val seq: Int? = null, val id: String = newId()) : AgentEvent()
+    data class Cancelled(val task: String, val id: String = newId()) : AgentEvent()
 
     @Serializable
     @SerialName("INTERRUPTED")
-    data class Interrupted(val task: String, val seq: Int? = null, val id: String = newId()) : AgentEvent()
+    data class Interrupted(val task: String, val id: String = newId()) : AgentEvent()
 
     @Serializable
     @SerialName("PAUSED")
-    data class Paused(val task: String, val seq: Int? = null, val id: String = newId()) : AgentEvent()
+    data class Paused(val task: String, val id: String = newId()) : AgentEvent()
 
     @Serializable
     @SerialName("RESUMED")
-    data class Resumed(val task: String, val seq: Int? = null, val id: String = newId()) : AgentEvent()
+    data class Resumed(val task: String, val id: String = newId()) : AgentEvent()
 }
+
+/** The task a report is about, for the reports the journal gates and numbers per task. */
+internal val AgentEvent.reportedTask: String?
+    get() = when (this) {
+        is AgentEvent.Started -> task
+        is AgentEvent.Yield -> task
+        is AgentEvent.Completed -> task
+        is AgentEvent.Failed -> task
+        is AgentEvent.Critical -> task
+        is AgentEvent.Progress -> task
+        is AgentEvent.Log -> task
+        is AgentEvent.Cancelled -> task
+        is AgentEvent.Interrupted -> task
+        is AgentEvent.Paused -> task
+        is AgentEvent.Resumed -> task
+        else -> null
+    }
+
+/** Whether a report ends its task: nothing is recorded for the task after it. */
+internal val AgentEvent.isTerminal: Boolean
+    get() = this is AgentEvent.Completed || this is AgentEvent.Failed || this is AgentEvent.Critical ||
+            this is AgentEvent.Cancelled || this is AgentEvent.Interrupted
 
 // ---- Close codes -------------------------------------------------------------------------
 

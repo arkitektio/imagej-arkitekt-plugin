@@ -32,7 +32,13 @@ class AgentProtocolTest {
     @Test
     fun `REGISTER carries exactly the fields the server allows`() {
         val keys = keysOf(AgentEvent.Register(token = "tok", force = false, sessionId = "sess"))
-        assertEquals(setOf("type", "token", "force", "session_id", "id"), keys)
+        assertEquals(
+                setOf(
+                        "type", "token", "force", "session_id", "nonce", "commands_seen", "sessions",
+                        "features", "spec_version", "id"
+                ),
+                keys
+        )
         // The field whose removal was the whole point: the server retired it and made Register
         // strict so a client still sending it is told to update rather than silently promoted.
         assertTrue("mode" !in keys)
@@ -82,7 +88,7 @@ class AgentProtocolTest {
     @Test
     fun `COMPLETED carries no returns`() {
         // Results travel as YIELD; a terminal COMPLETED is just the task id.
-        assertEquals(setOf("type", "task", "seq", "id"), keysOf(AgentEvent.Completed("t")))
+        assertEquals(setOf("type", "task", "id"), keysOf(AgentEvent.Completed("t")))
     }
 
     @Test
@@ -97,20 +103,12 @@ class AgentProtocolTest {
     private fun decode(text: String) = agentJson.decodeFromString(AgentMessage.serializer(), text)
 
     @Test
-    fun `INIT without inquiries decodes`() {
-        val msg = decode("""{"type":"INIT","id":"m1","agent":"42"}""") as AgentMessage.Init
-        assertEquals("42", msg.agent)
-        assertTrue(msg.inquiries.isEmpty())
-    }
-
-    @Test
-    fun `INIT inquiries decode as bare task objects`() {
-        // AssignInquiry is not an AgentMessage: on the wire it has only `task` — no type, no id.
+    fun `INIT says the nonce again and where the server stands`() {
         val msg = decode(
-                """{"type":"INIT","id":"m1","agent":"42",
-                    "inquiries":[{"task":"t-1"},{"task":"t-2"}]}"""
+                """{"type":"INIT","id":"m1","agent":"42","nonce":"n-1","positions":{"sess":7}}"""
         ) as AgentMessage.Init
-        assertEquals(listOf("t-1", "t-2"), msg.inquiries.map { it.task })
+        assertEquals("n-1", msg.nonce)
+        assertEquals(7L, msg.positions["sess"])
     }
 
     @Test
@@ -163,19 +161,28 @@ class AgentProtocolTest {
         assertEquals("t-1", msg.task)
     }
 
-    // ---- Inquiry reconciliation ---------------------------------------------------------
+    // ---- The journal ------------------------------------------------------------------------
 
     @Test
-    fun `every inquiry gets a terminal report`() {
-        val reports = reportsForInquiries(listOf(AssignInquiry("t-1"), AssignInquiry("t-2")))
-        assertEquals(listOf("t-1", "t-2"), reports.map { it.task })
-        assertTrue(reports.all { it.error.isNotBlank() })
-        // Silence here leaves the tasks in-flight server-side until a sweep resolves them.
-        assertEquals(2, reports.size)
-    }
+    fun `a report is numbered, kept until acknowledged, and nothing follows a terminal one`() {
+        val journal = Journal("sess")
+        assertTrue(journal.begin("t-1"))
+        journal.record(AgentEvent.Started("t-1"))
+        journal.record(AgentEvent.Completed("t-1"))
+        assertEquals(false, journal.record(AgentEvent.Log("t-1", "too late")))
+        assertEquals(false, journal.begin("t-1"), "a task runs once")
 
-    @Test
-    fun `no inquiries means no reports`() {
-        assertTrue(reportsForInquiries(emptyList()).isEmpty())
+        val owed = journal.owedAfter(0).map { Json.parseToJsonElement(it.second) as JsonObject }
+        assertEquals(listOf("1", "2"), owed.map { it["pos"]!!.jsonPrimitive.content })
+        assertEquals(listOf("1", "2"), owed.map { it["task_step"]!!.jsonPrimitive.content })
+        assertEquals("sess", owed[0]["journal_session"]!!.jsonPrimitive.content)
+        assertEquals(TaskStatus.ENDED, journal.status("t-1"))
+        assertEquals(TaskStatus.UNKNOWN, journal.status("t-2"))
+
+        journal.ack(1)
+        assertEquals(listOf(2L), journal.owedAfter(0).map { it.first })
+        // The server asks for a position that is gone: that is a loss to name.
+        assertEquals(1L..1L, journal.missing(1))
+        assertNull(journal.missing(2))
     }
 }
