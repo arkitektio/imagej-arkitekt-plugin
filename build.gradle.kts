@@ -68,7 +68,10 @@ repositories {
     // through to the next repo the way a 404 does, so one stalled request to a repo that was
     // never going to serve the artifact failed the build. Don't add it back. Timeouts/retries for this host are
     // tuned in gradle.properties.
-    maven("https://maven.scijava.org/content/groups/public")
+    // `/repository/public`, not the old `/content/groups/public`: since the host moved to
+    // Nexus 3 the old path still answers for POMs but 404s some jars (bsh-2.1.0), which a
+    // machine with a warm ~/.m2 never notices.
+    maven("https://maven.scijava.org/repository/public")
 }
 
 // The AWS SDK ships two HTTP implementations: apache-client (sync) and netty-nio-client (async).
