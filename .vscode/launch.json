@@ -9,7 +9,7 @@
       "request": "launch",
       "name": "Kotlin Launch",
       "projectRoot": "${workspaceFolder}",
-      "mainClass": "com.mycompany.imagej.GaussFilteringKt",
+      "mainClass": "live.arkitekt.imagej.ArkitektCommandKt",
       "preLaunchTask": "gradle: build"
     }
   ]

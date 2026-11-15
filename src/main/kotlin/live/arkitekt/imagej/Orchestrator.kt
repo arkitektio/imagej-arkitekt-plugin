@@ -1,4 +1,4 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -79,8 +79,9 @@ class Arkitekt(
         loginJob = null
         // Forget the kept login so the next one re-negotiates from scratch.
         runtime.forget()
-        // Remove the legacy token key written by older versions of this plugin.
-        Preferences.userNodeForPackage(Arkitekt::class.java).remove("token")
+        // Remove the legacy token key written by older versions of this plugin, under the
+        // package it had then.
+        Preferences.userRoot().node("com/mycompany/arkitekt").remove("token")
         ArkitektState.setState(ConnState.Disconnected)
     }
 }

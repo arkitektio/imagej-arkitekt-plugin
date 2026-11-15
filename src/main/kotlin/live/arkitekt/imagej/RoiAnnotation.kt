@@ -1,6 +1,6 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
-import com.mycompany.mikro.graphql.type.AnnotationKind
+import live.arkitekt.imagej.mikro.graphql.type.AnnotationKind
 
 // Turning a drawn ROI into a mikro Annotation.
 //

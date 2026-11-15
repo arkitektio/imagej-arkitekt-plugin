@@ -1,6 +1,6 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
-import com.mycompany.mikro.graphql.type.AxisType
+import live.arkitekt.imagej.mikro.graphql.type.AxisType
 import net.imagej.axis.Axes
 import net.imagej.axis.AxisType as ImageJAxisType
 

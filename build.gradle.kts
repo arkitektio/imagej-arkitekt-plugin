@@ -17,7 +17,7 @@ plugins {
 
 application {
     // Entry point: top-level main() in ArkitektCommand.kt -> compiled to ...ArkitektCommandKt
-    mainClass.set("com.mycompany.arkitekt.ArkitektCommandKt")
+    mainClass.set("live.arkitekt.imagej.ArkitektCommandKt")
 }
 
 // Put the IJ1 legacy layer on the classpath for `./gradlew run` so the "Run Image-To-Image Macro"
@@ -43,11 +43,11 @@ tasks.register<JavaExec>("macroSmokeTest") {
     description = "Headless smoke test of the IJ1-legacy Dataset<->ImagePlus + runMacro path"
     classpath = sourceSets["main"].runtimeClasspath +
         configurations["imagejRuntime"] + configurations["ij1Runtime"]
-    mainClass.set("com.mycompany.arkitekt.MacroSmokeTestKt")
+    mainClass.set("live.arkitekt.imagej.MacroSmokeTestKt")
     jvmArgs("--add-opens", "java.base/java.lang=ALL-UNNAMED", "-Djava.awt.headless=true")
 }
 
-group = "com.mycompany"
+group = "live.arkitekt"
 // Release version comes from the git tag via `-PpluginVersion=` (see
 // .github/workflows/release.yml); plain local builds keep the SNAPSHOT. Must stay ABOVE the
 // buildPlugin registration below, whose archiveFileName interpolates $version at
@@ -244,7 +244,7 @@ apollo {
     // Apollo's `introspection {}` block can't be used because it POSTs an
     // introspection query and expects JSON, while these endpoints return SDL.
     service("mikro") {
-        packageName.set("com.mycompany.mikro.graphql")
+        packageName.set("live.arkitekt.imagej.mikro.graphql")
         srcDir("src/main/graphql/mikro")
     }
 }
@@ -298,7 +298,7 @@ tasks.register("downloadSchemas") {
 // The rule for this list is "relocate what Fiji ships" - see the table in Fiji.app/jars. Adding
 // relocations for packages Fiji does NOT have (ktor, kotlinx, apollo, awssdk) buys nothing and
 // costs risk, since some of them resolve resources by package path.
-val shadedPrefix = "com.mycompany.arkitekt.shaded"
+val shadedPrefix = "live.arkitekt.imagej.shaded"
 
 // The list is derived by comparing the PACKAGES in the shaded jar against the packages in every
 // Fiji.app/jars jar - not the artifact names, which miss the case where one jar carries several
@@ -333,6 +333,18 @@ tasks.shadowJar {
     // classifier, so the bundled artifact reads arkitekt-plugin-<version>.jar.
     archiveBaseName.set("arkitekt-plugin")
     archiveClassifier.set("")
+
+    // Who this is, readable from the jar itself (`unzip -p arkitekt-plugin.jar META-INF/MANIFEST.MF`):
+    // the released jar has no version in its name, so that one link always gives the latest.
+    manifest {
+        attributes(
+            "Implementation-Title" to "Arkitekt for ImageJ",
+            "Implementation-Version" to project.version,
+            "Implementation-Vendor" to "Arkitekt",
+            "Implementation-URL" to "https://github.com/arkitektio/imagej-arkitekt-plugin",
+            "Bundle-License" to "MIT",
+        )
+    }
 
     // ktor engine containers, coroutines MainDispatcherFactory, aws execution interceptors: all
     // ServiceLoader-based. The transformer relocates the service file NAMES and CONTENTS too,
@@ -429,14 +441,14 @@ val verifyShadedJar by tasks.registering {
                 }
             }
 
-            check(names.contains("com/mycompany/arkitekt/ArkitektCommand.class")) {
+            check(names.contains("live/arkitekt/imagej/ArkitektCommand.class")) {
                 "${jar.name} does not contain the plugin class itself"
             }
             val indexPath = "META-INF/json/org.scijava.plugin.Plugin"
             val index = zip.getEntry(indexPath)
                 ?: error("${jar.name} lost $indexPath - Fiji would show no menu entry")
             val text = zip.getInputStream(index).readBytes().toString(Charsets.UTF_8)
-            check("com.mycompany.arkitekt.ArkitektCommand" in text) {
+            check("live.arkitekt.imagej.ArkitektCommand" in text) {
                 "$indexPath does not name ArkitektCommand:\n$text"
             }
         }
@@ -460,7 +472,7 @@ tasks.register<JavaExec>("shadedSmokeTest") {
         configurations["imagejRuntime"],
         configurations["ij1Runtime"],
     )
-    mainClass.set("com.mycompany.arkitekt.MacroSmokeTestKt")
+    mainClass.set("live.arkitekt.imagej.MacroSmokeTestKt")
     jvmArgs("--add-opens", "java.base/java.lang=ALL-UNNAMED", "-Djava.awt.headless=true")
 }
 

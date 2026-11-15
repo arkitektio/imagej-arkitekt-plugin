@@ -43,7 +43,7 @@ plugins:
   # token permissions and this repo has no issue traffic to annotate.
   - - "@semantic-release/github"
     - assets:
-        - path: dist/arkitekt-plugin-*.jar
+        - path: dist/arkitekt-plugin.jar
           label: "Plugin jar (drop into Fiji.app/plugins/)"
         - path: dist/arkitekt-plugin-*.zip
           label: "Plugin zip (unpacks to Fiji.app/plugins/arkitekt/)"
@@ -58,9 +58,10 @@ plugins:
 
         ## Installing in Fiji
 
-        **Simplest:** download `arkitekt-plugin-<%= nextRelease.version %>.jar` and drop it into
-        your Fiji installation's `plugins/` folder. Delete any older `arkitekt-plugin-*.jar` first,
-        then restart Fiji. The plugin appears under **Plugins › Arkitekt**.
+        **Simplest:** download `arkitekt-plugin.jar` and drop it into your Fiji installation's
+        `plugins/` folder, replacing the one that is there. If you still have a jar from before
+        3.2 (`arkitekt-plugin-<version>.jar`), delete it. Restart Fiji: the plugin appears under
+        **Plugins › Arkitekt**.
 
         **Alternatively** unzip `arkitekt-plugin-<%= nextRelease.version %>.zip` into `plugins/`;
         it contains a single `arkitekt/` folder, so you end up with `Fiji.app/plugins/arkitekt/`.

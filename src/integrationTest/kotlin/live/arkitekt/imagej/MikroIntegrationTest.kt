@@ -1,11 +1,11 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
 import com.apollographql.apollo.api.Optional
 import com.apollographql.apollo.api.http.HttpRequest
 import com.apollographql.apollo.api.http.HttpResponse
 import com.apollographql.apollo.network.http.HttpInterceptor
 import com.apollographql.apollo.network.http.HttpInterceptorChain
-import com.mycompany.mikro.graphql.DatasetLensesQuery
+import live.arkitekt.imagej.mikro.graphql.DatasetLensesQuery
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.int

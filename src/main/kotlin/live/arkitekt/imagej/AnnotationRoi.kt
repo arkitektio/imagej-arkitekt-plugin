@@ -1,6 +1,6 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
-import com.mycompany.mikro.graphql.type.AnnotationKind
+import live.arkitekt.imagej.mikro.graphql.type.AnnotationKind
 
 // Turning a stored mikro Annotation back into a drawable shape — the exact inverse of
 // `RoiAnnotation.kt`, and pure for the same reason: no ImageJ, no network. The code that actually

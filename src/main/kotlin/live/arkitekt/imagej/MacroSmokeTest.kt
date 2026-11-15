@@ -1,4 +1,4 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
 import live.arkitekt.AgentMessage
 import live.arkitekt.agentJson
@@ -77,7 +77,7 @@ private fun checkShadedRuntime(dataset: Dataset) {
     check(decoded == assign) { "serialization round-trip changed the message: $decoded" }
     // NB: do not start these strings with a relocated package token ("kotlinx…", "ucar…").
     // Shadow rewrites string constants as well as bytecode, so the message would come out as
-    // "com.mycompany.arkitekt.shaded.kotlinx-serialization round-trip OK".
+    // "live.arkitekt.imagej.shaded.kotlinx-serialization round-trip OK".
     println("serialization round-trip OK: $wire")
 
     val fromCoroutine = kotlinx.coroutines.runBlocking { "ok" }

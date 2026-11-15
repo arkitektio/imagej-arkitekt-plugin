@@ -1,4 +1,4 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
 import java.io.File
 import java.net.HttpURLConnection

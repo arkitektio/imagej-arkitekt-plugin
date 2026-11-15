@@ -10,10 +10,10 @@ ImageJ instance as a remote **agent**, and exposes ImageJ actions (upload the ac
 image, load an image back into the viewer) that the Arkitekt server can invoke remotely
 over a WebSocket. Images are moved as Zarr arrays stored in S3.
 
-> Note: `pom.xml` is a **stale leftover** from the `example-imagej2-command-kotlin` template —
-> the project migrated to Gradle, and the root POM is not part of any build (it even declares
-> `<ciManagement><system>None</system></ciManagement>`). The build is Gradle (`build.gradle.kts`).
-> `README.md` was rewritten and is current: it documents installing from a GitHub Release.
+> The build is Gradle (`build.gradle.kts`). Kotlin package `live.arkitekt.imagej` (it was the
+> template's `com.mycompany.arkitekt` until 3.2); MIT licence. `README.md` documents installing
+> from a GitHub Release: the jar is released as `arkitekt-plugin.jar`, with no version in its
+> name, so `…/releases/latest/download/arkitekt-plugin.jar` is a link that never goes stale.
 
 ## Build & run
 
@@ -110,7 +110,7 @@ flat classloader, so every library we ship that Fiji also ships was a coin flip 
 launcher — kotlin-stdlib 2.1.0 vs its 1.8.22, guava 33.4.8 vs 31.1, jackson 2.20 vs 2.14.2, okio
 3.9 vs 3.3, protobuf 4.31 vs 3.23, cdm-core 5.9.1 vs 5.3.3 — and whichever copy won, something
 broke. `shadowJar` (`com.gradleup.shadow`; the `johnrengelman` id is dead on Gradle 8.10) relocates
-those under `com.mycompany.arkitekt.shaded.`. The rule for that list is **relocate what Fiji
+those under `live.arkitekt.imagej.shaded.`. The rule for that list is **relocate what Fiji
 ships** — adding relocations for packages Fiji lacks (ktor, apollo, awssdk) buys nothing and costs
 risk, since some resolve resources by package path. Two deliberate exceptions:
 - **JNI is never relocated** — `com.github.luben.zstd` and blosc-java encode the Java package in
@@ -122,7 +122,7 @@ risk, since some resolve resources by package path. Two deliberate exceptions:
 Shadow rewrites **string constants**, not just bytecode — a literal beginning with a relocated
 package token comes out prefixed. That is what makes `Class.forName("ucar.ma2.Array")` keep
 working, but it also mangles log messages: `"kotlinx-serialization round-trip OK"` printed as
-`"com.mycompany.arkitekt.shaded.kotlinx-serialization round-trip OK"` until it was rephrased.
+`"live.arkitekt.imagej.shaded.kotlinx-serialization round-trip OK"` until it was rephrased.
 
 Derive the relocation list by comparing **packages**, not artifact names: one jar can carry
 several packages, which is how `thredds` and `uk.ac.rdg.resc.edal` were missed at first — they
@@ -220,13 +220,11 @@ defaults. A dev machine hides all of this behind `~/.gradle/caches`; only a cold
 ## GraphQL / Apollo codegen
 
 Three Apollo services are configured in `build.gradle.kts`, each generating a typed client
-under a distinct package. **Generated code is what you import** (e.g. `com.mycompany.mikro.graphql.GetLensQuery`).
+under a distinct package. **Generated code is what you import** (e.g. `live.arkitekt.imagej.mikro.graphql.GetLensQuery`).
 
 | Service   | Package                        | `.graphql` ops + schema location | Backend role |
 |-----------|--------------------------------|----------------------------------|--------------|
-| `lok`     | `com.mycompany.lok.graphql`    | `src/main/graphql/lok/`          | auth / "who am I" (`MeQuery`) |
-| `mikro`   | `com.mycompany.mikro.graphql`  | `src/main/graphql/mikro/`        | array datasets, lenses, coordinate systems + S3 upload/access grants |
-| `rekuest` | `com.mycompany.rekuest.graphql`| `src/main/graphql/rekuest/`      | agent + action/implementation registration |
+| `mikro`   | `live.arkitekt.imagej.mikro.graphql`  | `src/main/graphql/mikro/`        | array datasets, lenses, coordinate systems + S3 upload/access grants |
 
 To add a query/mutation: drop a `.graphql` file in the right service dir and rebuild.
 
@@ -245,7 +243,7 @@ Lens section below.
 
 ## Architecture
 
-The plugin lives in `src/main/kotlin/com/mycompany/arkitekt/` (the Arkitekt runtime itself is
+The plugin lives in `src/main/kotlin/live/arkitekt/imagej/` (the Arkitekt runtime itself is
 the arkitekt-kotlin library, see below):
 `ImageJApp.kt` (this plugin's app: its actions and ports), `Orchestrator.kt` (the login and
 serving jobs behind the UI), `Arkitekt.kt` (mikro/datalayer clients, image/Zarr, the action

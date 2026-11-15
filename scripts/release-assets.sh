@@ -25,7 +25,12 @@ fi
 
 rm -rf dist
 mkdir dist
-cp "build/arkitekt-plugin-$version.zip" "build/libs/arkitekt-plugin-$version.jar" dist/
+cp "build/arkitekt-plugin-$version.zip" dist/
+# The jar is released WITHOUT its version in the name: installing a new one replaces the old
+# instead of sitting beside it (two versions on Fiji's classpath is a coin toss), and
+# .../releases/latest/download/arkitekt-plugin.jar is one link that always gives the latest.
+# The version is in the jar's manifest.
+cp "build/libs/arkitekt-plugin-$version.jar" dist/arkitekt-plugin.jar
 (cd dist && sha256sum -- * > SHA256SUMS.txt)
 
 echo "Release assets for $version:"

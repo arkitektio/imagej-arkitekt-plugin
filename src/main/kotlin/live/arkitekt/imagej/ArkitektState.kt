@@ -1,4 +1,4 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
 import net.imagej.DatasetService
 import net.imagej.display.ImageDisplayService

@@ -8,19 +8,22 @@ can invoke remotely over a WebSocket. Images move as Zarr arrays stored in S3.
 
 ## Installing
 
-Grab the plugin from the [latest release](https://github.com/jhnnsrs/imagej-kotlin/releases/latest).
-Each release carries the same plugin in two forms, plus a `SHA256SUMS.txt`:
+**[Download arkitekt-plugin.jar](https://github.com/arkitektio/imagej-arkitekt-plugin/releases/latest/download/arkitekt-plugin.jar)**
+and drop it into your Fiji installation's `plugins/` folder. That link always gives the latest
+release; the jar has no version in its name, so a new one replaces the old. (Its version is in
+its manifest: `unzip -p arkitekt-plugin.jar META-INF/MANIFEST.MF`.)
 
-- **Simplest:** download `arkitekt-plugin-<version>.jar` and drop it into your Fiji
-  installation's `plugins/` folder. Delete any older `arkitekt-plugin-*.jar` first (two versions
-  on the classpath means Fiji picks one at random).
-- **Or** the zip, which unpacks to a single `arkitekt/` folder — the layout
-  `./gradlew installToImageJ` manages:
+If you installed a version before 3.2, delete its `arkitekt-plugin-<version>.jar` first: two
+versions on the classpath means Fiji picks one at random.
 
-  ```bash
-  rm -rf /path/to/Fiji.app/plugins/arkitekt        # remove a previous install first
-  unzip arkitekt-plugin-*.zip -d /path/to/Fiji.app/plugins/
-  ```
+Every [release](https://github.com/arkitektio/imagej-arkitekt-plugin/releases/latest) also
+carries a `SHA256SUMS.txt`, and the same plugin as a zip that unpacks to a single `arkitekt/`
+folder (the layout `./gradlew installToImageJ` manages):
+
+```bash
+rm -rf /path/to/Fiji.app/plugins/arkitekt        # remove a previous install first
+unzip arkitekt-plugin-*.zip -d /path/to/Fiji.app/plugins/
+```
 
 Restart Fiji. The plugin appears under **Plugins › Arkitekt**.
 

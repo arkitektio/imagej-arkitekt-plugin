@@ -1,4 +1,4 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
 import live.arkitekt.App
 import net.imagej.DatasetService

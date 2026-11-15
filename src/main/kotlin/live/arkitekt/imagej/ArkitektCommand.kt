@@ -35,7 +35,7 @@
  */
 @file:JvmMultifileClass
 
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
 
 import net.imagej.DatasetService

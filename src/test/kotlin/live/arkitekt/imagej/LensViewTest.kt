@@ -1,7 +1,7 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
 import live.arkitekt.*
-import com.mycompany.mikro.graphql.type.AxisType
+import live.arkitekt.imagej.mikro.graphql.type.AxisType
 import net.imagej.ImageJ
 import net.imagej.axis.Axes
 import ucar.ma2.DataType as UcarDataType

@@ -1,7 +1,7 @@
-package com.mycompany.arkitekt
+package live.arkitekt.imagej
 
-import com.mycompany.mikro.graphql.type.AnnotationKind
-import com.mycompany.mikro.graphql.type.AxisType
+import live.arkitekt.imagej.mikro.graphql.type.AnnotationKind
+import live.arkitekt.imagej.mikro.graphql.type.AxisType
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
