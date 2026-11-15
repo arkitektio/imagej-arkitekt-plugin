@@ -21,8 +21,6 @@ import com.mycompany.mikro.graphql.UpdateAnnotationMutation
 import com.mycompany.mikro.graphql.CreateArrayDatasetMutation
 import com.mycompany.mikro.graphql.GetArrayDatasetQuery
 import com.mycompany.mikro.graphql.AnnotationCollectionDescriptorsQuery
-import com.mycompany.mikro.graphql.ArrayDatasetDescriptorsQuery
-import com.mycompany.mikro.graphql.LensDescriptorsQuery
 import com.mycompany.mikro.graphql.GetLensQuery
 import com.mycompany.mikro.graphql.FinishZarrUploadMutation
 import com.mycompany.mikro.graphql.RequestZarrAccessMutation
@@ -253,32 +251,34 @@ class Services(
 // {"__identifier", "object"} form) and writes it back tagged.
 
 /**
- * A mikro object as an action takes and returns it: its id, and its [descriptors] when mikro
- * was asked.
+ * A mikro object as an action takes and returns it: its id, and what mikro said of it when it
+ * was loaded.
  *
- * A reference that arrives as an argument is expanded by asking mikro for the object's
- * `descriptors` (every identified type has the field): the facts a port's `@Requires` is tested
- * against, and what an action can read to decide what to do. One an action makes itself
- * (`DatasetRef(id)`) has none until it is tested against a `@Provides`, which asks then.
+ * A reference that arrives as an argument is expanded with ONE query, which brings the object
+ * and its `descriptors` (every identified mikro type has the field) together: the facts a
+ * port's `@Requires` is tested against, and what the action then works with. Nothing is asked
+ * a second time, to describe it or to use it.
+ *
+ * One an action makes itself (`DatasetRef(id)`) holds only the id: it has no descriptors, so a
+ * `@Provides` on it is not tested. Return a loaded reference where that matters.
  */
 abstract class MikroRef(val id: String, val descriptors: Map<String, JsonElement>?)
 
-/** How a [MikroRef] travels: by id, with its descriptors fetched by [fetch] when it is expanded. */
+/** How a [MikroRef] travels: by id, loaded by [load] (the object with its descriptors) when expanded. */
 open class MikroStructure<T : MikroRef>(
         override val identifier: String,
-        private val of: (String, Map<String, JsonElement>?) -> T,
-        private val fetch: suspend (Mikro, String) -> Any?
+        private val load: suspend (Mikro, String) -> T
 ) : Structure<T> {
-    override suspend fun expand(context: live.arkitekt.Context, id: String): T = of(id, described(context, id))
+    override suspend fun expand(context: live.arkitekt.Context, id: String): T = load(context[mikroService], id)
 
     override fun shrink(value: T): String = value.id
 
-    override suspend fun describe(context: live.arkitekt.Context, value: T): Map<String, JsonElement> =
-            value.descriptors ?: described(context, value.id)
-
-    private suspend fun described(context: live.arkitekt.Context, id: String): Map<String, JsonElement> =
-            (descriptorJson(fetch(context[mikroService], id)) as? JsonObject).orEmpty()
+    // What was fetched with it, and nothing else: describing never asks the server.
+    override fun describe(value: T): Map<String, JsonElement> = value.descriptors.orEmpty()
 }
+
+/** `descriptors` off the wire (GraphQL `JSON`: a flat object) as the map a reference holds. */
+fun descriptorsOf(value: Any?): Map<String, JsonElement> = (descriptorJson(value) as? JsonObject).orEmpty()
 
 /** A descriptor value (GraphQL `JSON`: a string, number, boolean, list or map) as JSON. */
 fun descriptorJson(value: Any?): JsonElement =
@@ -293,28 +293,52 @@ fun descriptorJson(value: Any?): JsonElement =
             else -> JsonPrimitive(value.toString())
         }
 
-/** A lens: a per-axis selection over a dataset. */
-class LensRef(id: String, descriptors: Map<String, JsonElement>? = null) : MikroRef(id, descriptors) {
+/** A lens: a per-axis selection over a dataset. Loaded, it holds the [lens] it stands for. */
+class LensRef(
+        id: String,
+        descriptors: Map<String, JsonElement>? = null,
+        val lens: GetLensQuery.Lens? = null
+) : MikroRef(id, descriptors) {
+    /** The lens itself: what the expand fetched, or (for a reference made by hand) asked for now. */
+    suspend fun loaded(mikro: Mikro): GetLensQuery.Lens =
+            lens ?: mikro.getClient().query(GetLensQuery(id = id)).execute().dataOrThrow().lens
+
     companion object :
-            MikroStructure<LensRef>("@mikro/lens", ::LensRef, { mikro, id ->
-                mikro.getClient().query(LensDescriptorsQuery(id)).execute().dataOrThrow().lens.descriptors
+            MikroStructure<LensRef>("@mikro/lens", { mikro, id ->
+                val lens = mikro.getClient().query(GetLensQuery(id = id)).execute().dataOrThrow().lens
+                LensRef(id, descriptorsOf(lens.descriptors), lens)
             })
 }
 
-/** A whole array dataset. */
-class DatasetRef(id: String, descriptors: Map<String, JsonElement>? = null) : MikroRef(id, descriptors) {
+/** A whole array dataset. Loaded, it holds the [dataset] it stands for. */
+class DatasetRef(
+        id: String,
+        descriptors: Map<String, JsonElement>? = null,
+        val dataset: GetArrayDatasetQuery.ArrayDataset? = null
+) : MikroRef(id, descriptors) {
+    /** The dataset itself: what the expand fetched, or (for a reference made by hand) asked for now. */
+    suspend fun loaded(mikro: Mikro): GetArrayDatasetQuery.ArrayDataset =
+            dataset ?: mikro.getClient().query(GetArrayDatasetQuery(id = id)).execute().dataOrThrow().arrayDataset
+
     companion object :
-            MikroStructure<DatasetRef>("@mikro/arraydataset", ::DatasetRef, { mikro, id ->
-                mikro.getClient().query(ArrayDatasetDescriptorsQuery(id)).execute().dataOrThrow().arrayDataset.descriptors
+            MikroStructure<DatasetRef>("@mikro/arraydataset", { mikro, id ->
+                val dataset =
+                        mikro.getClient().query(GetArrayDatasetQuery(id = id)).execute().dataOrThrow().arrayDataset
+                DatasetRef(id, descriptorsOf(dataset.descriptors), dataset)
             })
 }
 
 /** A collection of annotations drawn over a lens. */
 class CollectionRef(id: String, descriptors: Map<String, JsonElement>? = null) : MikroRef(id, descriptors) {
     companion object :
-            MikroStructure<CollectionRef>("@mikro/annotationcollection", ::CollectionRef, { mikro, id ->
-                mikro.getClient().query(AnnotationCollectionDescriptorsQuery(id)).execute()
-                        .dataOrThrow().annotationCollection.descriptors
+            MikroStructure<CollectionRef>("@mikro/annotationcollection", { mikro, id ->
+                CollectionRef(
+                        id,
+                        descriptorsOf(
+                                mikro.getClient().query(AnnotationCollectionDescriptorsQuery(id)).execute()
+                                        .dataOrThrow().annotationCollection.descriptors
+                        )
+                )
             })
 }
 
@@ -499,9 +523,7 @@ fun arrayOf(lens: GetLensQuery.Lens): GetLensQuery.OnArrayLens =
                 )
 
 // The same, for a whole ArrayDataset: no slices, and the same locally-inferred render axes.
-suspend fun fetchDatasetView(services: Services, datasetId: String): LensView {
-    val response = services.mikro.getClient().query(GetArrayDatasetQuery(id = datasetId)).execute()
-    val dataset = response.dataOrThrow().arrayDataset
+fun datasetViewOf(dataset: GetArrayDatasetQuery.ArrayDataset): LensView {
 
     val axes = dataset.intrinsicSystem?.axes
             ?.sortedBy { it.order }
@@ -812,9 +834,8 @@ suspend fun showLens(lens: LensRef, @Inject services: Services): LensRef {
 
     val lensId = lens.id
 
-    val response = services.mikro.getClient().query(GetLensQuery(id = lensId)).execute()
-
-    val view = lensViewOf(response.dataOrThrow().lens)
+    // The expand already fetched it, with its descriptors: nothing is asked twice.
+    val view = lensViewOf(lens.loaded(services.mikro))
     val store = services.datalayer.requestAccess(view.storeId)
     val dataset = loadLensView(services, store, view)
 
@@ -837,9 +858,7 @@ suspend fun showLens(lens: LensRef, @Inject services: Services): LensRef {
 @Returns("dataset")
 suspend fun showDataset(dataset: DatasetRef, @Inject services: Services): DatasetRef {
 
-    val datasetId = dataset.id
-
-    val view = fetchDatasetView(services, datasetId)
+    val view = datasetViewOf(dataset.loaded(services.mikro))
     val store = services.datalayer.requestAccess(view.storeId)
     val image = loadLensView(services, store, view)
 
@@ -903,7 +922,7 @@ suspend fun annotateLens(lens: LensRef, @Inject services: Services): CollectionR
 
     val lensId = lens.id
 
-    val found = services.mikro.getClient().query(GetLensQuery(id = lensId)).execute().dataOrThrow().lens
+    val found = lens.loaded(services.mikro)
     val view = lensViewOf(found)
     val store = services.datalayer.requestAccess(view.storeId)
     val dataset = loadLensView(services, store, view)
@@ -959,7 +978,7 @@ suspend fun annotateInFiji(
 
     val lensId = lens.id
 
-    val found = services.mikro.getClient().query(GetLensQuery(id = lensId)).execute().dataOrThrow().lens
+    val found = lens.loaded(services.mikro)
     val view = lensViewOf(found)
     val store = services.datalayer.requestAccess(view.storeId)
     val dataset = loadLensView(services, store, view)
@@ -1207,10 +1226,9 @@ suspend fun runImageToImageMacro(
         @Inject services: Services
 ): DatasetRef {
 
-    val imageId = dataset.id
 
     // 1. Download the input dataset (same access path as showDataset).
-    val view = fetchDatasetView(services, imageId)
+    val view = datasetViewOf(dataset.loaded(services.mikro))
     val store = services.datalayer.requestAccess(view.storeId)
     val inputDataset = loadLensView(services, store, view)
 

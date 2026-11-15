@@ -1,20 +1,6 @@
-# What mikro says of one object: its `descriptors`, the facts a port's requires and provides are
-# stated over (`@mikro/n_space_axes`, `@mikro/n_channels`, …). Every identified type has the
-# field; these fetch it for the three structures the actions take, when one is expanded.
-query LensDescriptors($id: ID!) {
-  lens(id: $id) {
-    id
-    descriptors
-  }
-}
-
-query ArrayDatasetDescriptors($id: ID!) {
-  arrayDataset(id: $id) {
-    id
-    descriptors
-  }
-}
-
+# What mikro says of an annotation collection: its `descriptors`, the facts a port's requires
+# and provides are stated over. A lens and a dataset bring theirs in the query that loads them
+# (`GetLens`, `GetArrayDataset`); a collection has no such query at expand, so this is its one.
 query AnnotationCollectionDescriptors($id: ID!) {
   annotationCollection(id: $id) {
     id

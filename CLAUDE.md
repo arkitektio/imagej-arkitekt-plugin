@@ -278,11 +278,14 @@ What stays here:
 - **Requires and provides**: a spec is a type alias (`@Requires(N_SPACE_AXES, EQUALS, "3")
   @Provides(…) typealias Volume = LensRef`), or `@Requires` on a parameter / `@Provides` on the
   function; the keys mikro declares are the `N_*` constants in `Arkitekt.kt`.
-- **References carry `descriptors`** (`MikroRef`): expanding an argument asks mikro for the
-  object's `descriptors` field (`Describe.graphql`; every identified mikro type has it), so an
-  action can read `lens.descriptors` and a `@Requires` is tested with no further query. One an
-  action makes itself (`DatasetRef(id)`) has `null` and is only asked about when a `@Provides`
-  is tested. Every expanded argument costs one small query, constrained or not.
+- **References are loaded once, with their `descriptors`** (`MikroRef`): expanding an argument
+  runs ONE query that brings the object and mikro's `descriptors` of it (`GetLens`,
+  `GetArrayDataset`; a collection's small `Describe.graphql`). The action reads `lens.descriptors`
+  and uses `lens.loaded(mikro)`; a `@Requires` is tested from what is already there.
+  **Describing never makes a round trip of its own: that is an antipattern**, and
+  arkitekt-kotlin's `Structure.describe(value)` cannot make one (not suspending, no context).
+  A reference an action makes itself (`DatasetRef(id)`) has no descriptors, so a `@Provides`
+  on it is not tested.
 - **`Lens` is an interface in mikro** (array, table, mesh, network … lenses). `GetLens` selects
   the pixel fields under `... on ArrayLens`, and `arrayOf(lens)` refuses any other kind.
   `src/main/graphql/mikro/schema.graphqls` is a copy of the server's: refresh it with
