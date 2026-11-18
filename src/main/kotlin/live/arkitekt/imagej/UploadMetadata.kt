@@ -170,7 +170,7 @@ fun channelNameFromLabel(label: String?): String? {
  * which is then left to whoever knows it.
  *
  * As mikro's `calibrate()` writes it: every upload axis gets a factor (an axis the image lacks,
- * 1.0), the channel axis is dimensionless, an uncalibrated time axis is dimensionless too, and
+ * 1.0), the channel axis is dimensionless, an uncalibrated time axis is "a.u.", and
  * an offset turns the SCALE into one AFFINE (an edge is exactly one kind).
  */
 fun calibrationOf(datasetId: String, title: String, metadata: ImageMetadata): CreateCoordinateSystemInput? {
@@ -184,7 +184,9 @@ fun calibrationOf(datasetId: String, title: String, metadata: ImageMetadata): Cr
     val tUnit = timeUnit(t.unit)
 
     // The factors for c, t, z, y, x: what one step along each axis is.
-    val units = listOf("dimensionless", tUnit ?: "dimensionless", zUnit, yUnit, xUnit)
+    // mikro wants a TIME axis measured in [time]; one ImageJ gives no interval is "a.u." (its
+    // spelling for a genuinely arbitrary unit), never "dimensionless", which it refuses there.
+    val units = listOf("dimensionless", tUnit ?: "a.u.", zUnit, yUnit, xUnit)
     val scales = listOf(
             1.0,
             if (tUnit != null) t.scale else 1.0,

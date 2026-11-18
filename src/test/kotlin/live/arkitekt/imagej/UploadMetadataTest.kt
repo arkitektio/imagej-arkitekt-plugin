@@ -62,6 +62,9 @@ class UploadMetadataTest {
         // Row x: the scale on the diagonal, the offset last.
         assertEquals(listOf(0.0, 0.0, 0.0, 0.0, 0.2, 10.0), affine.affine.getOrNull()!![4])
 
+        // No frame interval: time is "a.u." (mikro refuses "dimensionless" on a TIME axis).
+        assertEquals("a.u.", shifted.axes.first { it.name == "t" }.unit.getOrNull())
+
         assertNull(calibrationOf("7", "cells", image(AxisCalibration("x", true, "pixel"), AxisCalibration("y", true, "pixel"))))
     }
 
