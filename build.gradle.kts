@@ -140,6 +140,9 @@ dependencies {
     // The Arkitekt runtime: App, Runtime, the agent. Substituted by the composite build
     // (settings.gradle.kts), so no version is named here.
     implementation("live.arkitekt:arkitekt-kotlin")
+    // arkitekt-meshd for every platform: what the login runs to reach services that are only
+    // on the deployment's mesh. Resources only (~21 MB of the jar).
+    implementation("live.arkitekt:arkitekt-kotlin-meshd")
     ksp("live.arkitekt:arkitekt-kotlin-ksp")
     implementation(project(":zarr-java"))
     implementation("com.apollographql.apollo:apollo-runtime:4.0.0")
@@ -147,6 +150,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing")
     implementation(platform("software.amazon.awssdk:bom:2.32.8"))
     implementation("software.amazon.awssdk:s3")
+    // Named for its ProxyConfiguration: the datalayer over the mesh goes through its proxy.
+    implementation("software.amazon.awssdk:apache-client")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0-RC")
     implementation("io.ktor:ktor-client-core:3.0.2")
     implementation("io.ktor:ktor-client-cio:3.0.2")

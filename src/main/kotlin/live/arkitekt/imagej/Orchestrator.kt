@@ -6,12 +6,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import live.arkitekt.Connection
 import live.arkitekt.Runtime
 import live.arkitekt.lok.graphql.MeQuery
 import net.imagej.DatasetService
 import net.imagej.display.ImageDisplayService
 import org.scijava.ui.UIService
 import java.util.prefs.Preferences
+import kotlin.concurrent.thread
 
 /**
  * The plugin's one connection to a deployment, as the toolbar button and the dialog drive it.
@@ -30,6 +32,10 @@ class Arkitekt(
     // The background coroutine serving the app (the agent's WebSocket to /agi).
     private var provideJob: Job? = null
 
+    // The login being served: closing it stops the mesh node its services are reached
+    // through, if any (a new login would otherwise find the node's state in use).
+    private var connection: Connection? = null
+
     // The background coroutine running an in-flight login (device-code challenge poll).
     private var loginJob: Job? = null
 
@@ -38,7 +44,9 @@ class Arkitekt(
 
     /** Log in and start serving. Throws what the login throws. */
     suspend fun alogin(url: String): MeQuery.Data {
+        disconnect(wait = true)
         val connection = runtime.connect(url)
+        this.connection = connection
         provideJob = CoroutineScope(Dispatchers.Default).launch { connection.serve() }
         return connection.context.unlok.getUser()
     }
@@ -71,10 +79,21 @@ class Arkitekt(
         ArkitektState.setState(ConnState.Disconnected)
     }
 
-    fun logout() {
-        // Tear down the serving agent and any in-flight login.
+    // Stop serving, and stop the mesh node of the login served, if any. meshd can take a few
+    // seconds to exit: a new login waits for it (it would find the node's state in use), the UI
+    // thread does not.
+    private fun disconnect(wait: Boolean) {
         provideJob?.cancel()
         provideJob = null
+        connection?.let { served ->
+            if (wait) served.close() else thread(name = "arkitekt-disconnect", isDaemon = true) { served.close() }
+        }
+        connection = null
+    }
+
+    fun logout() {
+        // Tear down the serving agent and any in-flight login.
+        disconnect(wait = false)
         loginJob?.cancel()
         loginJob = null
         // Forget the kept login so the next one re-negotiates from scratch.

@@ -1,6 +1,8 @@
 package live.arkitekt.imagej
 
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials
+import software.amazon.awssdk.http.apache.ApacheHttpClient
+import software.amazon.awssdk.http.apache.ProxyConfiguration
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
@@ -139,17 +141,7 @@ class Datalayer(alias: Alias, mikro: Mikro) {
             throw Exception("Failed to retrieve S3 credentials")
         }
 
-        val sessionCredentials =
-                AwsSessionCredentials.create(accessKeyId, secretAccessKey, sessionToken)
-
-        val s3Client =
-                S3Client.builder()
-                        .endpointOverride(URI.create(alias.to_http_path("")))
-                        .credentialsProvider(StaticCredentialsProvider.create(sessionCredentials))
-                        .region(Region.US_EAST_1)
-                        .forcePathStyle(true)
-                        .build()
-
+        val s3Client = s3Client(AwsSessionCredentials.create(accessKeyId, secretAccessKey, sessionToken))
         return DatalayerStore(S3Store(s3Client, bucketName, key), store)
     }
 
@@ -189,20 +181,37 @@ class Datalayer(alias: Alias, mikro: Mikro) {
             throw Exception("Failed to retrieve S3 credentials")
         }
 
-        val sessionCredentials =
-            AwsSessionCredentials.create(accessKeyId, secretAccessKey, sessionToken)
-
-        val s3Client =
-            S3Client.builder()
-                .endpointOverride(URI.create(alias.to_http_path("")))
-                .credentialsProvider(StaticCredentialsProvider.create(sessionCredentials))
-                .region(Region.US_EAST_1)
-                .forcePathStyle(true)
-                .build()
-
+        val s3Client = s3Client(AwsSessionCredentials.create(accessKeyId, secretAccessKey, sessionToken))
         return DatalayerStore(S3Store(s3Client, bucketName, key), storeId)
 
     }
+
+    // An S3 client for the datalayer with these credentials. When the datalayer was reached over
+    // the mesh, every request goes through the mesh node's proxy (with its credentials, sent up
+    // front rather than after a 407), and never through a proxy the environment names.
+    private fun s3Client(credentials: AwsSessionCredentials): S3Client =
+            S3Client.builder()
+                    .endpointOverride(URI.create(alias.to_http_path("")))
+                    .credentialsProvider(StaticCredentialsProvider.create(credentials))
+                    .region(Region.US_EAST_1)
+                    .forcePathStyle(true)
+                    .apply {
+                        alias.mesh?.let { proxy ->
+                            httpClientBuilder(
+                                    ApacheHttpClient.builder().proxyConfiguration(
+                                            ProxyConfiguration.builder()
+                                                    .endpoint(URI.create(proxy.toString()))
+                                                    .username(proxy.username)
+                                                    .password(proxy.password)
+                                                    .preemptiveBasicAuthenticationEnabled(true)
+                                                    .useSystemPropertyValues(false)
+                                                    .useEnvironmentVariableValues(false)
+                                                    .build()
+                                    )
+                            )
+                        }
+                    }
+                    .build()
 
 
 
@@ -214,6 +223,8 @@ class Mikro(alias: Alias, tokens: TokenManager, interceptors: List<HttpIntercept
     private val apolloClient: ApolloClient =
             ApolloClient.Builder()
                     .serverUrl(alias.to_http_path("graphql"))
+                    // Through the mesh node's proxy, when mikro was reached over the mesh.
+                    .reaching(alias)
                     .addHttpInterceptor(AuthorizationInterceptor { tokens.accessToken() })
                     .addHttpInterceptor(LogInterceptor("mikro"))
                     // Whatever else should see every request (a test counts them).
