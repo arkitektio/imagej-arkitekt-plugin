@@ -108,7 +108,9 @@ class MikroIntegrationTest {
     }
 
     @Test
-    fun `an upload carries its anchors and its calibration, and mikro takes both`() = runBlocking {
+    // `: Unit`, or the block's last value becomes the method's return type, and JUnit skips a
+    // test method that returns anything without a word.
+    fun `an upload carries its anchors and its calibration, and mikro takes both`(): Unit = runBlocking {
         val calibrated = ImageMetadata(
                 title = "calibrated",
                 sourceFile = "/data/cells.tif",
