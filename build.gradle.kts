@@ -1,3 +1,4 @@
+import java.io.DataInputStream
 import java.util.zip.ZipFile
 plugins {
     kotlin("jvm") version "2.1.0"
@@ -234,10 +235,21 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     }
 }
 
+// What ships is compiled against Java 8's class library, not only to its bytecode: with JDK 17's,
+// a call such as ByteBuffer.position(int) links to a method Java 8 (Fiji's runtime) lacks, and
+// fails there with NoSuchMethodError. Tests run on the JDK 17 they are built with.
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin") {
+    compilerOptions.freeCompilerArgs.add("-Xjdk-release=1.8")
+}
+
 tasks.withType<JavaCompile> {
     sourceCompatibility = "1.8"
     targetCompatibility = "1.8"
     options.encoding = "UTF-8"
+}
+
+tasks.named<JavaCompile>("compileJava") {
+    options.release.set(8)
 }
 
 
@@ -417,6 +429,46 @@ val stagePlugin by tasks.registering(Sync::class) {
 // Structural check: nothing that should have moved is still at the top level, the relocated
 // copies are actually there, and - easy to lose and silent when lost - the SciJava annotation
 // index survived the merge. That index is the only reason "Plugins > Arkitekt" appears at all.
+// The calls in a class file to buffer methods only Java 9+ has: position/limit/flip/... that
+// return the buffer's own type (Java 8's return java.nio.Buffer). Read off the constant pool,
+// which lists every method a class calls.
+fun java9BufferCalls(bytes: ByteArray): List<String> {
+    val input = DataInputStream(bytes.inputStream())
+    input.skipBytes(8)
+    val count = input.readUnsignedShort()
+    val utf8 = arrayOfNulls<String>(count)
+    val classes = IntArray(count)
+    val natName = IntArray(count)
+    val natType = IntArray(count)
+    val methods = mutableListOf<Pair<Int, Int>>()
+    var i = 1
+    while (i < count) {
+        when (val tag = input.readUnsignedByte()) {
+            1 -> utf8[i] = input.readUTF()
+            7 -> classes[i] = input.readUnsignedShort()
+            8, 16, 19, 20 -> input.skipBytes(2)
+            15 -> input.skipBytes(3)
+            3, 4, 9, 11, 17, 18 -> input.skipBytes(4)
+            10 -> methods += input.readUnsignedShort() to input.readUnsignedShort()
+            12 -> { natName[i] = input.readUnsignedShort(); natType[i] = input.readUnsignedShort() }
+            5, 6 -> { input.skipBytes(8); i++ }
+            else -> error("unknown constant pool tag $tag")
+        }
+        i++
+    }
+    val covariant = setOf("position", "limit", "flip", "clear", "mark", "reset", "rewind")
+    val buffer = Regex("java/nio/\\w+Buffer")
+    return methods.mapNotNull { (owner, nat) ->
+        val ownerName = utf8[classes[owner]] ?: return@mapNotNull null
+        val name = utf8[natName[nat]] ?: return@mapNotNull null
+        val descriptor = utf8[natType[nat]] ?: return@mapNotNull null
+        val returns = descriptor.substringAfter(')')
+        if (buffer.matches(ownerName) && name in covariant && returns != "Ljava/nio/Buffer;" &&
+                returns.startsWith("Ljava/nio/") && returns.endsWith("Buffer;")) "$ownerName.$name$descriptor"
+        else null
+    }
+}
+
 val verifyShadedJar by tasks.registering {
     group = "verification"
     // This checks the packages we KNOW about. To re-derive the list after a dependency change,
@@ -455,6 +507,31 @@ val verifyShadedJar by tasks.registering {
             val text = zip.getInputStream(index).readBytes().toString(Charsets.UTF_8)
             check("live.arkitekt.imagej.ArkitektCommand" in text) {
                 "$indexPath does not name ArkitektCommand:\n$text"
+            }
+
+            // Fiji runs Java 8: nothing in the jar may need more. Every class must be Java 8
+            // bytecode (a multi-release jar's META-INF/versions/ is for newer JVMs only), and
+            // none may call what only Java 9+ has but compiles fine against a newer JDK, such
+            // as ByteBuffer.position(int) returning ByteBuffer (Java 8's returns Buffer): that is
+            // the NoSuchMethodError zarr-java's sharding codec threw in Fiji before it was built
+            // against Java 8's class library.
+            val tooNew = mutableListOf<String>()
+            val java9Calls = sortedSetOf<String>()
+            val classes = zip.entries().asSequence()
+                    .filter { it.name.endsWith(".class") && !it.name.startsWith("META-INF/versions/") }
+            for (entry in classes) {
+                val bytes = zip.getInputStream(entry).readBytes()
+                val major = ((bytes[6].toInt() and 0xff) shl 8) or (bytes[7].toInt() and 0xff)
+                if (major > 52) tooNew += "${entry.name} (class version $major)"
+                java9BufferCalls(bytes).forEach { java9Calls += "${entry.name}: $it" }
+            }
+            check(tooNew.isEmpty()) {
+                "${jar.name} has ${tooNew.size} classes Java 8 cannot load:\n" + tooNew.take(20).joinToString("\n")
+            }
+            check(java9Calls.isEmpty()) {
+                "${jar.name} calls buffer methods Java 8 lacks (NoSuchMethodError in Fiji); build that code " +
+                        "against Java 8's class library (options.release = 8 / -Xjdk-release=1.8):\n" +
+                        java9Calls.take(20).joinToString("\n")
             }
         }
         logger.lifecycle("verifyShadedJar: ${jar.name} OK")

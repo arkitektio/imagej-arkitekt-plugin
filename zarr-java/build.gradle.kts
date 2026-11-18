@@ -24,6 +24,13 @@ tasks.withType<JavaCompile> {
     options.encoding = "UTF-8"
 }
 
+// Against Java 8's own class library, as the pom's `maven.compiler.release = 8` did: a JDK 17
+// compiling with only source/target 8 links JDK 17's signatures, e.g. ByteBuffer.position(int)
+// returning ByteBuffer, which Java 8 (Fiji's runtime) does not have: NoSuchMethodError there.
+tasks.named<JavaCompile>("compileJava") {
+    options.release.set(8)
+}
+
 dependencies {
     // Maven compile-scope deps -> `api` (transitive; the parent plugin imports ucar.ma2.* and
     // software.amazon.awssdk...S3Client from these, so they must stay on its classpath + in the bundle).
