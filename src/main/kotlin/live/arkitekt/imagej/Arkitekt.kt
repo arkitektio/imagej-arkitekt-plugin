@@ -227,8 +227,15 @@ class Mikro(alias: Alias, tokens: TokenManager, interceptors: List<HttpIntercept
     }
 }
 
+/**
+ * What the plugin has to be allowed to do at mikro: read lenses and datasets, upload images, and
+ * write annotations. It is what mikro's schema asks for on the operations in
+ * `src/main/graphql/mikro`; `ScopesTest` holds the two together.
+ */
+val MIKRO_SCOPES: List<String> = listOf("mikro_annotate", "mikro_read", "mikro_write")
+
 /** Mikro, as an app declares it: `App(…).service(mikroService)`, then `context[mikroService]`. */
-val mikroService = Service("mikro", "live.arkitekt.mikro") { Mikro(it.alias, it.tokens) }
+val mikroService = Service("mikro", "live.arkitekt.mikro", scopes = MIKRO_SCOPES) { Mikro(it.alias, it.tokens) }
 
 /** The datalayer (S3), whose credentials mikro issues: declared after [mikroService]. */
 val datalayerService = Service("datalayer", "live.arkitekt.s3") { Datalayer(it.alias, it[mikroService]) }

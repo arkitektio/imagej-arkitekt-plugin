@@ -1,6 +1,7 @@
 package live.arkitekt.imagej
 
 import live.arkitekt.App
+import live.arkitekt.Unlok
 import net.imagej.DatasetService
 import net.imagej.display.ImageDisplayService
 import org.scijava.ui.UIService
@@ -24,6 +25,8 @@ fun imagejApp(
         App("imagej", "0.1.0")
                 .service(mikroService)
                 .service(datalayerService)
+                // The panel says who is logged in, which it asks lok.
+                .scopes(Unlok.SCOPES)
                 .provide { context ->
                     Services(
                             context[mikroService],
