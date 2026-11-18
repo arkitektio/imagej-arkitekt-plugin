@@ -5,6 +5,7 @@ import com.apollographql.apollo.api.http.HttpRequest
 import com.apollographql.apollo.api.http.HttpResponse
 import com.apollographql.apollo.network.http.HttpInterceptor
 import com.apollographql.apollo.network.http.HttpInterceptorChain
+import live.arkitekt.imagej.mikro.graphql.CreateCoordinateSystemMutation
 import live.arkitekt.imagej.mikro.graphql.DatasetLensesQuery
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
@@ -97,13 +98,40 @@ class MikroIntegrationTest {
                 services.mikro.getClient()
                         .query(DatasetLensesQuery(datasetId, Optional.present(false)))
                         .execute().dataOrThrow().arrayDataset.lenses.first().id
-        val lens = LensRef.expand(context, lensId)
+        val lens = ArrayLensRef.expand(context, lensId)
         assertEquals(3, lens.descriptors?.get(N_SPACE_AXES)?.jsonPrimitive?.int)
 
         // And its pixels read back through the lens: the box that was written.
         val view = lensViewOf(assertNotNull(lens.lens))
         val image = loadLensView(services, services.datalayer.requestAccess(view.storeId), view)
         assertEquals(shape.fold(1L) { size, extent -> size * extent }, (0 until image.numDimensions()).fold(1L) { size, d -> size * image.dimension(d) })
+    }
+
+    @Test
+    fun `an upload carries its anchors and its calibration, and mikro takes both`() = runBlocking {
+        val calibrated = ImageMetadata(
+                title = "calibrated",
+                sourceFile = "/data/cells.tif",
+                axes = listOf(
+                        AxisCalibration("c", present = true),
+                        AxisCalibration("t", present = false),
+                        AxisCalibration("z", present = true, unit = "micron", scale = 0.5),
+                        AxisCalibration("y", present = true, unit = "micron", scale = 0.1),
+                        AxisCalibration("x", present = true, unit = "micron", scale = 0.1)
+                ),
+                channels = listOf(ChannelInfo(0, name = "DAPI", color = "#0000ff"), ChannelInfo(1)),
+                info = "Info as ImageJ keeps it"
+        )
+        // The anchors go with the create: a refusal of them throws here.
+        val created = uploadArray(services, ucar.ma2.Array.factory(ucar.ma2.DataType.UBYTE, shape), "calibrated", calibrated)
+        // uploadArray only reports a refused calibration, so send both kinds again and see them
+        // taken: the SCALE it sends, and the AFFINE an image with an origin sends.
+        val client = services.mikro.getClient()
+        val scale = assertNotNull(calibrationOf(created.id, "calibrated (scale)", calibrated))
+        assertNotNull(client.mutation(CreateCoordinateSystemMutation(scale)).execute().dataOrThrow().createCoordinateSystem.id)
+        val shifted = calibrated.copy(axes = calibrated.axes.map { if (it.name == "x") it.copy(origin = 5.0) else it })
+        val affine = assertNotNull(calibrationOf(created.id, "calibrated (affine)", shifted))
+        assertNotNull(client.mutation(CreateCoordinateSystemMutation(affine)).execute().dataOrThrow().createCoordinateSystem.id)
     }
 
     @Test

@@ -4,6 +4,7 @@ import net.imagej.DatasetService
 import net.imagej.display.ImageDisplayService
 import org.scijava.ui.UIService
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.prefs.Preferences
 
 /** Connection status shared between the toolbar tool and the login dialog. */
 sealed class ConnState {
@@ -31,6 +32,18 @@ object ArkitektState {
         private set
 
     private val listeners = CopyOnWriteArrayList<(ConnState) -> Unit>()
+
+    private val prefs: Preferences? = runCatching { Preferences.userRoot().node("live/arkitekt/imagej") }.getOrNull()
+
+    /**
+     * The deployment to log in to: the last one logged in to (kept between sessions), or
+     * go.arkitekt.live. The toolbar button, the dialog and the ImageJ2 tool share it.
+     */
+    var server: String
+        get() = runCatching { prefs?.get("server", null) }.getOrNull()?.takeIf { it.isNotBlank() } ?: Dialog.DEFAULT_SERVER
+        set(value) {
+            runCatching { prefs?.put("server", value.trim().ifEmpty { Dialog.DEFAULT_SERVER }) }
+        }
 
     /** Get the shared orchestrator, creating it on first use from the injected services. */
     @Synchronized

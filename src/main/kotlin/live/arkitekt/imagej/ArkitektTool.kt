@@ -121,7 +121,7 @@ class ArkitektTool : AbstractTool() {
                 statusService?.showStatus("Arkitekt: connected as ${state.username}")
             }
             else -> {
-                report("ArkitektTool: starting interactive login to ${Dialog.DEFAULT_SERVER}")
+                report("ArkitektTool: starting interactive login to ${ArkitektState.server}")
                 startLogin(orchestrator)
             }
         }
@@ -132,13 +132,13 @@ class ArkitektTool : AbstractTool() {
         // A cached session carries a refresh token, so the login is silent; without one the
         // device-code flow will open a browser. Say which, so an unexpected browser is not a
         // surprise and a silent login does not look like nothing happened.
-        val silent = orchestrator.hasCachedConfig(Dialog.DEFAULT_SERVER)
+        val silent = orchestrator.hasCachedConfig(ArkitektState.server)
         statusService?.showStatus(
-                if (silent) "Arkitekt: reconnecting to ${Dialog.DEFAULT_SERVER}…"
-                else "Arkitekt: connecting to ${Dialog.DEFAULT_SERVER} — approve in your browser…"
+                if (silent) "Arkitekt: reconnecting to ${ArkitektState.server}…"
+                else "Arkitekt: connecting to ${ArkitektState.server} — approve in your browser…"
         )
         orchestrator.login(
-                Dialog.DEFAULT_SERVER,
+                ArkitektState.server,
                 onSuccess = { report("ArkitektTool: login succeeded") },
                 onError = { e -> reportError("Login failed: ${e.message ?: e.toString()}") }
         )

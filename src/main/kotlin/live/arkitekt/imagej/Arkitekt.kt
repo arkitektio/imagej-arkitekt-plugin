@@ -16,11 +16,13 @@ import com.apollographql.apollo.api.http.HttpResponse
 import com.apollographql.apollo.network.http.HttpInterceptor
 import com.apollographql.apollo.network.http.HttpInterceptorChain
 import live.arkitekt.*
+import live.arkitekt.rekuest.graphql.type.AssignWidgetInput
 import live.arkitekt.imagej.mikro.graphql.CreateAnnotationCollectionMutation
 import live.arkitekt.imagej.mikro.graphql.GetAnnotationCollectionQuery
 import live.arkitekt.imagej.mikro.graphql.CreateAnnotationMutation
 import live.arkitekt.imagej.mikro.graphql.UpdateAnnotationMutation
 import live.arkitekt.imagej.mikro.graphql.CreateArrayDatasetMutation
+import live.arkitekt.imagej.mikro.graphql.CreateCoordinateSystemMutation
 import live.arkitekt.imagej.mikro.graphql.GetArrayDatasetQuery
 import live.arkitekt.imagej.mikro.graphql.AnnotationCollectionDescriptorsQuery
 import live.arkitekt.imagej.mikro.graphql.GetLensQuery
@@ -284,9 +286,13 @@ class Services(
  */
 abstract class MikroRef(val id: String, val descriptors: Map<String, JsonElement>?)
 
-/** How a [MikroRef] travels: by id, loaded by [load] (the object with its descriptors) when expanded. */
+/**
+ * How a [MikroRef] travels: by id, loaded by [load] (the object with its descriptors) when
+ * expanded, and picked in a form with [widget] (mikro's own search for that kind).
+ */
 open class MikroStructure<T : MikroRef>(
         override val identifier: String,
+        override val widget: AssignWidgetInput?,
         private val load: suspend (Mikro, String) -> T
 ) : Structure<T> {
     override suspend fun expand(context: live.arkitekt.Context, id: String): T = load(context[mikroService], id)
@@ -313,8 +319,12 @@ fun descriptorJson(value: Any?): JsonElement =
             else -> JsonPrimitive(value.toString())
         }
 
-/** A lens: a per-axis selection over a dataset. Loaded, it holds the [lens] it stands for. */
-class LensRef(
+/**
+ * An array lens: a per-axis selection over an array dataset, the only kind of lens with pixels
+ * (mikro's `@mikro/arraylens`; a table, mesh or network lens is another structure). Loaded, it
+ * holds the [lens] it stands for.
+ */
+class ArrayLensRef(
         id: String,
         descriptors: Map<String, JsonElement>? = null,
         val lens: GetLensQuery.Lens? = null
@@ -324,9 +334,12 @@ class LensRef(
             lens ?: mikro.getClient().query(GetLensQuery(id = id)).execute().dataOrThrow().lens
 
     companion object :
-            MikroStructure<LensRef>("@mikro/lens", { mikro, id ->
+            MikroStructure<ArrayLensRef>("@mikro/arraylens", searchWidget(SEARCH_ARRAY_LENSES, "mikro"), { mikro, id ->
                 val lens = mikro.getClient().query(GetLensQuery(id = id)).execute().dataOrThrow().lens
-                LensRef(id, descriptorsOf(lens.descriptors), lens)
+                // `lens(id)` answers with whichever kind the id is: refuse one that is not ours,
+                // as mikro's Python expander does.
+                arrayOf(lens)
+                ArrayLensRef(id, descriptorsOf(lens.descriptors), lens)
             })
 }
 
@@ -341,7 +354,7 @@ class DatasetRef(
             dataset ?: mikro.getClient().query(GetArrayDatasetQuery(id = id)).execute().dataOrThrow().arrayDataset
 
     companion object :
-            MikroStructure<DatasetRef>("@mikro/arraydataset", { mikro, id ->
+            MikroStructure<DatasetRef>("@mikro/arraydataset", searchWidget(SEARCH_ARRAY_DATASETS, "mikro"), { mikro, id ->
                 val dataset =
                         mikro.getClient().query(GetArrayDatasetQuery(id = id)).execute().dataOrThrow().arrayDataset
                 DatasetRef(id, descriptorsOf(dataset.descriptors), dataset)
@@ -351,7 +364,7 @@ class DatasetRef(
 /** A collection of annotations drawn over a lens. */
 class CollectionRef(id: String, descriptors: Map<String, JsonElement>? = null) : MikroRef(id, descriptors) {
     companion object :
-            MikroStructure<CollectionRef>("@mikro/annotationcollection", { mikro, id ->
+            MikroStructure<CollectionRef>("@mikro/annotationcollection", searchWidget(SEARCH_ANNOTATION_COLLECTIONS, "mikro"), { mikro, id ->
                 CollectionRef(
                         id,
                         descriptorsOf(
@@ -362,12 +375,25 @@ class CollectionRef(id: String, descriptors: Map<String, JsonElement>? = null) :
             })
 }
 
+// mikro's search queries, as its Python client publishes them (`mikro.api.schema`
+// `Search*Query.Meta.document`): the widget a form picks each structure with. Copied verbatim,
+// so a port declared here is drawn exactly as the same port declared in Python. `$requires`
+// (the lens query) is filled with the port's own constraints by the frontend.
+const val SEARCH_ARRAY_LENSES =
+        "query SearchArrayLenses(\$search: String, \$values: [ID!], \$requires: [DescriptorConstraintInput!], \$fits: [FitsConstraintInput!], \$limit: Int, \$offset: Int = 0) {\n  options: lenses(\n    filters: { kind: ARRAY, search: \$search, ids: \$values, requires: \$requires, fits: \$fits }\n    pagination: { limit: \$limit, offset: \$offset }\n  ) {\n    value: id\n    label: title\n    description: detail\n    group: origin\n    __typename\n  }\n}"
+
+const val SEARCH_ARRAY_DATASETS =
+        "query SearchArrayDatasets(\$search: String, \$values: [ID!], \$fits: [FitsConstraintInput!], \$limit: Int, \$offset: Int = 0) {\n  options: arrayDatasets(\n    filters: { search: \$search, ids: \$values, fits: \$fits }\n    pagination: { limit: \$limit, offset: \$offset }\n  ) {\n    value: id\n    label: name\n    __typename\n  }\n}"
+
+const val SEARCH_ANNOTATION_COLLECTIONS =
+        "query SearchAnnotationCollections(\$search: String, \$values: [ID!], \$limit: Int, \$offset: Int = 0) {\n  options: annotationCollections(\n    filters: { search: \$search, ids: \$values }\n    pagination: { limit: \$limit, offset: \$offset }\n  ) {\n    value: id\n    label: name\n    __typename\n  }\n}"
+
 // The descriptor keys mikro declares for a lens and a dataset: what a spec constrains. A spec
 // is a type alias, as in mikro's Python `specs.py`, and an action takes it like any structure:
 //
 //     @Requires(N_SPACE_AXES, DescriptorOperator.EQUALS, "3")
 //     @Provides(N_SPACE_AXES, DescriptorOperator.EQUALS, "3")
-//     typealias Volume = LensRef
+//     typealias Volume = ArrayLensRef
 //
 // "One channel" is `N_CHANNELS LTE 1`, an extent, never "no channel axis".
 const val N_SPACE_AXES = "@mikro/n_space_axes"
@@ -749,7 +775,10 @@ fun generateChunkShape(inarrayShape: IntArray, itemSize: Int): IntArray {
 suspend fun uploadArray(
         services: Services,
         inarray: ucar.ma2.Array,
-        name: String
+        name: String,
+        // What the image says of itself (calibration, channels, ImageJ's metadata): carried as
+        // anchors and a calibration when given (see UploadMetadata.kt).
+        metadata: ImageMetadata? = null
 ): CreateArrayDatasetMutation.CreateArrayDataset {
 
     val s3Client = services.datalayer.requestStore()
@@ -801,38 +830,48 @@ suspend fun uploadArray(
                             data = s3Client.storeId,
                             name = name,
                             axes = UPLOAD_AXES,
+                            anchors = Optional.presentIfNotNull(metadata?.let(::anchorsOf)),
                     )
             )
 
     val client = services.mikro.getClient()
 
-    val response = client.mutation(mutation).execute()
+    val created = client.mutation(mutation).execute().dataOrThrow().createArrayDataset
 
-    println("Response: ${response.data}")
-    return response.dataOrThrow().createArrayDataset
+    // Its physical size, when the image knows it: a space with an INFERRED edge into it.
+    if (metadata != null) {
+        val calibration = calibrationOf(created.id, name, metadata)
+        if (calibration != null) {
+            // The dataset is there either way: a calibration the server refuses is reported,
+            // and the upload still answers with it (it can be calibrated by hand).
+            try {
+                client.mutation(CreateCoordinateSystemMutation(calibration)).execute().dataOrThrow()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                println("Uploaded ${created.id}, but its calibration was refused: ${e.message}")
+            }
+        }
+    }
+    return created
 }
 
 /**
  * Upload Image
  *
- * Upload the currently active image in the viewer.
+ * Upload the image that is active in ImageJ, with what it says of itself: its physical size
+ * (pixel size, z step, frame interval), its channels' names and colours, its source file and
+ * ImageJ's own metadata.
  *
- * @param name How would you like to name the image?
- * @return The returned dataset
+ * @param name The name of the new dataset. Leave empty to use the image's title.
+ * @return The uploaded dataset
  */
 @Action(key = "frage")
 @Returns("dataset")
-suspend fun uploadActiveImage(name: String, @Inject services: Services): DatasetRef {
-
-    services.imageDisplayService.imageDisplays.forEach { d -> println(d) }
-
-    var active = services.imageDisplayService.getActiveDataset(services.imageDisplayService.imageDisplays[0])
-
-    var array = imgPlusToCTZYXUcarArray(active.imgPlus)
-
-    var dataset = uploadArray(services, array, name)
-
-    return DatasetRef(dataset.id)
+suspend fun uploadActiveImage(name: String?, @Inject services: Services): DatasetRef {
+    val source = activeUpload(services)
+    val title = name?.takeIf { it.isNotBlank() } ?: source.metadata.title?.takeIf { it.isNotBlank() } ?: "ImageJ image"
+    return DatasetRef(uploadArray(services, source.array, title, source.metadata).id)
 }
 
 
@@ -850,7 +889,7 @@ suspend fun uploadActiveImage(name: String, @Inject services: Services): Dataset
  */
 @Action
 @Returns("shown")
-suspend fun showLens(lens: LensRef, @Inject services: Services): LensRef {
+suspend fun showLens(lens: ArrayLensRef, @Inject services: Services): ArrayLensRef {
 
     val lensId = lens.id
 
@@ -938,7 +977,7 @@ private fun positionOf(item: DrawnShape, display: ImageDisplay, view: LensView):
  */
 @Action
 @Returns("collection")
-suspend fun annotateLens(lens: LensRef, @Inject services: Services): CollectionRef {
+suspend fun annotateLens(lens: ArrayLensRef, @Inject services: Services): CollectionRef {
 
     val lensId = lens.id
 
@@ -991,7 +1030,7 @@ suspend fun annotateLens(lens: LensRef, @Inject services: Services): CollectionR
 @Action
 @Returns("annotated")
 suspend fun annotateInFiji(
-        lens: LensRef,
+        lens: ArrayLensRef,
         collection: CollectionRef?,
         @Inject services: Services
 ): CollectionRef {

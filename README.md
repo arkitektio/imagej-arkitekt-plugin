@@ -25,11 +25,22 @@ rm -rf /path/to/Fiji.app/plugins/arkitekt        # remove a previous install fir
 unzip arkitekt-plugin-*.zip -d /path/to/Fiji.app/plugins/
 ```
 
-Restart Fiji. The plugin appears under **Plugins › Arkitekt**.
+Restart Fiji. An **Arkitekt button** (the round logo) appears in Fiji's toolbar, after the
+built-in tools. Its colour says how things stand: grey (not connected), amber (connecting),
+violet (connected), red (the last login failed). Clicking it leaves your current tool selected
+and opens a menu: **Log in** (or log out, reconnect, cancel), **Change server…** (default
+`https://go.arkitekt.live`, remembered between sessions) and the Arkitekt window. The window
+is also under **Plugins › Arkitekt**; opening it puts the button back if a toolset switch
+(the toolbar's `>>` menu) took it away.
 
-Open it, enter your Arkitekt server (default `https://go.arkitekt.live`) and click **Login** —
-this opens a browser for device-code approval. The login is cached in
-`~/.arkitekt/fakts_cache.json`, so subsequent starts are silent. Delete that file to log out.
+The first login opens a browser for device-code approval. It is cached in
+`~/.arkitekt/fakts_cache.json`, so later starts are silent; **Log out** forgets it.
+
+**Uploading** (the *Upload Image* action) takes the image that is active in Fiji. Its name is
+optional (the image's title by default), and it carries what the image says of itself: its
+pixel size, z step and frame interval (as a calibration mikro marks *inferred*, so one set by
+hand outranks it), its channels' names (from the slice labels, when they hold names) and
+colours, its source file, and ImageJ's Info and properties.
 
 Fiji's bundled JRE is what this is tested against.
 

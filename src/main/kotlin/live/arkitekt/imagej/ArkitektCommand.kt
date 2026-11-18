@@ -140,7 +140,7 @@ class Dialog : JDialog {
 
         // Advanced override: the coordination server. Defaults to go.arkitekt.live; power users
         // can edit it to point at another deployment (e.g. a local dev server).
-        val serverInput = JTextField(DEFAULT_SERVER)
+        val serverInput = JTextField(ArkitektState.server)
         serverInput.font = serverInput.font.deriveFont(13f)
         serverInput.border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(BORDER, 1, true),
@@ -237,6 +237,7 @@ class Dialog : JDialog {
 
         loginButton.addActionListener {
             val serverUrl = serverInput.text.trim().ifEmpty { DEFAULT_SERVER }
+            ArkitektState.server = serverUrl
             // After a failure, a Re-Login clears the cached (stale) configuration so the
             // next attempt re-negotiates from scratch. The stateListener updates the labels.
             if (loginFailed) {
@@ -322,6 +323,8 @@ open class ArkitektCommand<T : RealType<T>> : Command {
 
             // Share the single orchestrator with the toolbar tool (ArkitektTool) via ArkitektState.
             val arkitekt = ArkitektState.getOrCreate(uiService!!, datasetService!!, imageDisplayService!!)
+            // Put the toolbar button back, if a toolset switch took it away.
+            ArkitektToolbar.install(context)
             var dialog = Dialog(context, arkitekt)
             dialog.isVisible = true
         }

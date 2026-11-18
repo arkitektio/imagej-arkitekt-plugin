@@ -36,3 +36,13 @@ mutation RequestZarrAccess($input: RequestZarrAccessInput!) {
     path
   }
 }
+
+# Give an uploaded dataset its physical size: a coordinate system carrying the units, and the
+# edge (a SCALE, or an AFFINE with the origin) registering the dataset's pixel grid into it. What
+# mikro's Python `dataset.calibrate(...)` sends.
+mutation CreateCoordinateSystem($input: CreateCoordinateSystemInput!) {
+  createCoordinateSystem(input: $input) {
+    id
+    name
+  }
+}
