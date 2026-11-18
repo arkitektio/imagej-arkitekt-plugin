@@ -849,7 +849,7 @@ suspend fun uploadActiveImage(name: String, @Inject services: Services): Dataset
  * @return The lens that was shown
  */
 @Action
-@Returns("lens")
+@Returns("shown")
 suspend fun showLens(lens: LensRef, @Inject services: Services): LensRef {
 
     val lensId = lens.id
@@ -875,7 +875,7 @@ suspend fun showLens(lens: LensRef, @Inject services: Services): LensRef {
  * @return The dataset that was shown
  */
 @Action
-@Returns("dataset")
+@Returns("shown")
 suspend fun showDataset(dataset: DatasetRef, @Inject services: Services): DatasetRef {
 
     val view = datasetViewOf(dataset.loaded(services.mikro))
@@ -989,7 +989,7 @@ suspend fun annotateLens(lens: LensRef, @Inject services: Services): CollectionR
  * @return The collection the ROIs were synced with
  */
 @Action
-@Returns("collection")
+@Returns("annotated")
 suspend fun annotateInFiji(
         lens: LensRef,
         collection: CollectionRef?,
@@ -1238,7 +1238,7 @@ private suspend fun runAnnotationSession(
  * @return The resulting dataset after running the macro
  */
 @Action
-@Returns("dataset")
+@Returns("result")
 suspend fun runImageToImageMacro(
         dataset: DatasetRef,
         macro: String,
